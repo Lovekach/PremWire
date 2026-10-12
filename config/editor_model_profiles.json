@@ -1,0 +1,27 @@
+{
+  "version": "premwire-editor-model-profiles-v1",
+  "profiles": {
+    "current_fallback": {
+      "model": "qwen3.5:4b",
+      "temperature": 0.3,
+      "context_length": 4096,
+      "max_parallel_requests": 1,
+      "faithful_rewrite_mode": false,
+      "simple_num_predict": 500,
+      "hardware_profile": "CURRENT_LAPTOP"
+    },
+    "future_primary": {
+      "model": "qwen3.5:9b",
+      "temperature": 0.1,
+      "context_length": 4096,
+      "max_parallel_requests": 1,
+      "faithful_rewrite_mode": true,
+      "simple_num_predict": 300,
+      "simple_top_p": 0.8,
+      "simple_top_k": 20,
+      "simple_seed": 42,
+      "simple_presence_penalty": 0.0,
+      "hardware_profile": "RTX5070_8GB"
+    }
+  }
+}

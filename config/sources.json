@@ -1,0 +1,12 @@
+{
+  "sources": [
+    {
+      "id": "example_telegram",
+      "platform": "telegram",
+      "name": "Example feed: replace with a permitted public source",
+      "handle": "example_source",
+      "url": "https://t.me/example_source",
+      "enabled": false
+    }
+  ]
+}

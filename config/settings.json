@@ -1,0 +1,38 @@
+{
+  "timezone": "Europe/Moscow",
+  "active_window": {"start": "00:00", "end": "23:59"},
+  "collection": {"poll_interval_seconds": 30, "initial_sync": "baseline"},
+  "filters": {"block_advertising": true, "advertising_markers": ["subscribe", "promo code", "betting", "реклама", "промокод", "подписывайтесь на канал", "трансляция"]},
+  "queue": {
+    "interval_minutes": 4,
+    "interval_min_minutes": 4,
+    "interval_max_minutes": 4,
+    "max_posts_per_hour": 20,
+    "max_generate_per_run": 6,
+    "stale_backlog_hours": 3,
+    "stale_backlog_min_hype_score": 6,
+    "publish_backlog_gradually": false,
+    "discard_backlog_automatically": false,
+    "daily_fresh_start": true
+  },
+  "publishing": {
+    "dry_run": true, "channel": "", "chat": "", "owner": "",
+    "auto_reaction": "", "auto_approve": false,
+    "delete_when_source_deleted": false, "update_when_source_edited": false
+  },
+  "production": {"enabled": false, "mode": "daily_digest", "freshness_minutes": 180},
+  "editor": {
+    "enabled": true, "provider": "ollama", "model": "qwen3.5:9b",
+    "base_url": "http://127.0.0.1:11434", "timeout_seconds": 45,
+    "max_source_chars": 6000, "max_output_chars": 1200,
+    "temperature": 0, "context_length": 4096, "keep_alive": "1m",
+    "faithful_rewrite_mode": true
+  },
+  "x_publishing": {"enabled": false},
+  "vk_publishing": {"enabled": false, "group_id": 0, "community_url": "", "screen_name": ""},
+  "dzen_lifecycle": {"enabled": false},
+  "dzen_digest": {"enabled": false},
+  "moderation": {"enabled": false, "chat": "", "allowed_bot_ids": []},
+  "imagegen_worker": {"enabled": false},
+  "storage": {"database": "data/premwire.sqlite3", "drafts_directory": "drafts", "logs_directory": "logs"}
+}

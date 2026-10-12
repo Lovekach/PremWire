@@ -1,0 +1,21 @@
+{
+  "policy_version": "stage-c3b-entity-canonicalization-2.0",
+  "registry_sources": [
+    "config/entity_registry.json",
+    "config/entity_registry_stage_c2_reviewed.json",
+    "config/entity_registry_stage_c3b_reviewed.json",
+    "config/club-emblems.json"
+  ],
+  "allowed_match_methods": [
+    "exact_canonical",
+    "exact_reviewed_alias",
+    "deterministic_normalized_alias",
+    "deterministic_inflected_variant"
+  ],
+  "whole_alias_only": true,
+  "require_unique_entity": true,
+  "allow_fuzzy_matching": false,
+  "allow_transliteration_guessing": false,
+  "allow_entity_creation": false,
+  "minimum_normalized_alias_length": 3
+}

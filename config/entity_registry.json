@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "entities": [
+    {
+      "entity_id": "player-kylian-mbappe",
+      "entity_type": "player",
+      "canonical_name": "Kylian Mbappe",
+      "display_name_ru": "Килиан Мбаппе",
+      "surname_display": "МБАППЕ",
+      "aliases": [
+        {"language":"en","alias":"Kylian Mbappe","alias_type":"canonical"},
+        {"language":"en","alias":"Kylian Mbappé","alias_type":"orthographic"},
+        {"language":"ru","alias":"Килиан Мбаппе","alias_type":"editorial"},
+        {"language":"ru","alias":"Мбаппе","alias_type":"surname"}
+      ],
+      "grammatical_forms": {"nominative":"Килиан Мбаппе","indeclinable":true},
+      "status": "active",
+      "provenance": "editorial_registry_v1"
+    },
+    {
+      "entity_id": "player-example",
+      "entity_type": "player",
+      "canonical_name": "Example Player",
+      "display_name_ru": "Игрок",
+      "surname_display": "ИГРОК",
+      "aliases": [
+        {"language":"en","alias":"Example Player","alias_type":"canonical"},
+        {"language":"ru","alias":"Игрок","alias_type":"editorial"}
+      ],
+      "grammatical_forms": {"nominative":"Игрок"},
+      "status": "fixture",
+      "provenance": "stage_c_fixture"
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "diouf": {
+    "agreement": "West Ham reached an agreement to sign El Hadji Malick Diouf from Slavia Prague.",
+    "agreement_repeat": "West Ham agreed a deal for El Hadji Malick Diouf from Slavia Prague.",
+    "official": "West Ham officially signed El Hadji Malick Diouf from Slavia Prague."
+  },
+  "palacios": {
+    "route_a": "Exequiel Palacios: talks for transfer from Bayer Leverkusen to Liverpool.",
+    "route_b": "Exequiel Palacios: talks for transfer from Liverpool to Bayer Leverkusen."
+  },
+  "sarr": {
+    "talks": "Manchester United are in talks to sign Pape Matar Sarr from Tottenham.",
+    "talks_repeat": "Manchester United continue talks to sign Pape Matar Sarr from Tottenham.",
+    "bid_and_agreement": "Manchester United reached agreement to sign Pape Matar Sarr from Tottenham."
+  },
+  "martinez": {
+    "talks": "Chelsea are in talks to sign Emiliano Martinez from Aston Villa.",
+    "talks_repeat": "Chelsea continue talks to sign Emiliano Martinez from Aston Villa.",
+    "certainty_upgrade": "Chelsea officially signed Emiliano Martinez from Aston Villa."
+  },
+  "grealish": {
+    "talks": "Everton are in talks to sign Jack Grealish from Manchester City.",
+    "salary_detail": "Everton continue talks to sign Jack Grealish from Manchester City. The salary is being discussed."
+  },
+  "barcola": {
+    "agreement": "Liverpool reached an agreement to sign Bradley Barcola from PSG.",
+    "agreement_repeat": "Liverpool agreed a deal to sign Bradley Barcola from PSG.",
+    "official": "Liverpool officially signed Bradley Barcola from PSG."
+  },
+  "match": {
+    "final": "Arsenal beat Liverpool 2:0 in the Premier League.",
+    "final_retake": "Arsenal defeated Liverpool 2:0 in the Premier League."
+  },
+  "promo": "В этом видео рассказывается о футбольных трансляциях: подпишись на наш канал!"
+}

@@ -1,0 +1,44 @@
+name: Public source checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: public-checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  offline-tests:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install locked direct dependencies
+        run: python -m pip install -r requirements.lock
+      - name: Structural and offline gates
+        run: |
+          python scripts/check_public_tree.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/offline_tests.py .
+      - name: Full-history and directory secret gates
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scannerDir = Join-Path $env:RUNNER_TEMP 'premwire-gitleaks'
+          New-Item -ItemType Directory -Path $scannerDir | Out-Null
+          $archive = Join-Path $env:RUNNER_TEMP 'gitleaks.zip'
+          Invoke-WebRequest 'https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_windows_x64.zip' -OutFile $archive
+          Expand-Archive -LiteralPath $archive -DestinationPath $scannerDir
+          $scannerExe = Join-Path $scannerDir 'gitleaks.exe'
+          if ((Get-FileHash -LiteralPath $scannerExe -Algorithm SHA256).Hash -ne '17157E2EE8B76FC8B1D8BEE607A250E34B8A8023C8BC81822D4B5EE4D78FCB7C') { throw 'Scanner checksum failed' }
+          $safeOutput = & $scannerExe git . --redact=100 --no-banner '--log-opts=--all --full-history' 2>&1
+          if ($LASTEXITCODE -ne 0) { throw 'History secret gate failed; inspect privately' }
+          $safeOutput = & $scannerExe dir . --redact=100 --no-banner 2>&1
+          if ($LASTEXITCODE -ne 0) { throw 'Directory secret gate failed; inspect privately' }

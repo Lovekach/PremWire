@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "sources": [
+    {"platform":"x","account":"FabrizioRomano","canonical_name":"Fabrizio Romano","source_role":"journalist","trust_tier":1,"official_entity_id":null,"allowed_languages":["en","it"],"enabled":true},
+    {"platform":"x","account":"David_Ornstein","canonical_name":"David Ornstein","source_role":"journalist","trust_tier":1,"official_entity_id":null,"allowed_languages":["en"],"enabled":true},
+    {"platform":"x","account":"JacobsBen","canonical_name":"Ben Jacobs","source_role":"journalist","trust_tier":2,"official_entity_id":null,"allowed_languages":["en"],"enabled":true},
+    {"platform":"x","account":"TransferNewsCen","canonical_name":"Transfer News Central","source_role":"aggregator","trust_tier":3,"official_entity_id":null,"allowed_languages":["en"],"enabled":true},
+    {"platform":"x","account":"premierleague","canonical_name":"Premier League","source_role":"official_league","trust_tier":1,"official_entity_id":"league-premier-league","allowed_languages":["en"],"enabled":true},
+    {"platform":"x","account":"England","canonical_name":"England Football","source_role":"official_federation","trust_tier":1,"official_entity_id":"federation-england","allowed_languages":["en"],"enabled":true},
+    {"platform":"manual_x","account":"manual_x_inbox","canonical_name":"Manual X source","source_role":"unknown","trust_tier":4,"official_entity_id":null,"allowed_languages":["en","ru"],"enabled":true},
+    {"platform":"telegram","account":"mtransfers","canonical_name":"Мировые трансферы","source_role":"aggregator","trust_tier":3,"official_entity_id":null,"allowed_languages":["ru"],"enabled":true,"trusted_for_editorial":true},
+    {"platform":"telegram","account":"AlbionMain","canonical_name":"Английский Акцент","source_role":"aggregator","trust_tier":3,"official_entity_id":null,"allowed_languages":["ru"],"enabled":true},
+    {"platform":"telegram","account":"vishli_football","canonical_name":"Вышли!","source_role":"aggregator","trust_tier":3,"official_entity_id":null,"allowed_languages":["ru"],"enabled":true},
+    {"platform":"telegram","account":"fabrizio_transfery","canonical_name":"Fabrizio Transfery","source_role":"aggregator","trust_tier":3,"official_entity_id":null,"allowed_languages":["ru"],"enabled":true}
+  ]
+}

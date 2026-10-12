@@ -1,0 +1,27 @@
+{
+  "registry_version": "stage-c3b-reviewed-1.0",
+  "review_scope": "stage-c3b-development-supported-subjects",
+  "aliases": [
+    {"entity_id":"player-jhon-duran","alias":"Jhon Durán","language":"en","entity_type":"player","canonical_name":"Jhon Durán","reviewed":true,"source_event_ids":[638]},
+    {"entity_id":"player-diego-conde","alias":"Diego Conde","language":"en","entity_type":"player","canonical_name":"Diego Conde","reviewed":true,"source_event_ids":[311]},
+    {"entity_id":"player-karim-adeyemi","alias":"Karim Adeyemi","language":"en","entity_type":"player","canonical_name":"Karim Adeyemi","reviewed":true,"source_event_ids":[1340,1586]},
+    {"entity_id":"player-karim-adeyemi","alias":"Карим Адейеми","language":"ru","entity_type":"player","canonical_name":"Karim Adeyemi","reviewed":true,"source_event_ids":[1345,1344]},
+    {"entity_id":"player-kang-in-lee","alias":"Kang-in Lee","language":"en","entity_type":"player","canonical_name":"Kang-in Lee","reviewed":true,"source_event_ids":[1827]},
+    {"entity_id":"player-kang-in-lee","alias":"Ли Кан Ин","language":"ru","entity_type":"player","canonical_name":"Kang-in Lee","reviewed":true,"source_event_ids":[1806]},
+    {"entity_id":"player-alejandro-garnacho","alias":"Alejandro Garnacho","language":"en","entity_type":"player","canonical_name":"Alejandro Garnacho","reviewed":true,"source_event_ids":[1450,1445]},
+    {"entity_id":"player-alejandro-garnacho","alias":"Алехандро Гарначо","language":"ru","entity_type":"player","canonical_name":"Alejandro Garnacho","reviewed":true,"source_event_ids":[1449,1446,1142]},
+    {"entity_id":"player-aladji-bamba","alias":"Аладжи Бамба","language":"ru","entity_type":"player","canonical_name":"Aladji Bamba","reviewed":true,"source_event_ids":[1343]},
+    {"entity_id":"player-morgan-rogers","alias":"Морган Роджерс","language":"ru","entity_type":"player","canonical_name":"Morgan Rogers","reviewed":true,"source_event_ids":[900]},
+    {"entity_id":"player-morgan-rogers","alias":"Morgan Rogers","language":"en","entity_type":"player","canonical_name":"Morgan Rogers","reviewed":true,"source_event_ids":[802]},
+    {"entity_id":"player-crysencio-summerville","alias":"Crysencio Summerville","language":"en","entity_type":"player","canonical_name":"Crysencio Summerville","reviewed":true,"source_event_ids":[1837]},
+    {"entity_id":"player-luca-erlein","alias":"Luca Erlein","language":"en","entity_type":"player","canonical_name":"Luca Erlein","reviewed":true,"source_event_ids":[1822]},
+    {"entity_id":"player-daizen-maeda","alias":"Daizen Maeda","language":"en","entity_type":"player","canonical_name":"Daizen Maeda","reviewed":true,"source_event_ids":[1821]},
+    {"entity_id":"player-akor-adams","alias":"Akor Adams","language":"en","entity_type":"player","canonical_name":"Akor Adams","reviewed":true,"source_event_ids":[1590]},
+    {"entity_id":"player-elliot-anderson","alias":"Elliot Anderson","language":"en","entity_type":"player","canonical_name":"Elliot Anderson","reviewed":true,"source_event_ids":[1507]},
+    {"entity_id":"player-christos-tzolis","alias":"Christos Tzolis","language":"en","entity_type":"player","canonical_name":"Christos Tzolis","reviewed":true,"source_event_ids":[1406]},
+    {"entity_id":"player-filip-bilbija","alias":"Filip Bilbija","language":"en","entity_type":"player","canonical_name":"Filip Bilbija","reviewed":true,"source_event_ids":[1182]},
+    {"entity_id":"player-will-lankshear","alias":"Will Lankshear","language":"en","entity_type":"player","canonical_name":"Will Lankshear","reviewed":true,"source_event_ids":[1097,976]},
+    {"entity_id":"player-issa-diop","alias":"Issa Diop","language":"en","entity_type":"player","canonical_name":"Issa Diop","reviewed":true,"source_event_ids":[1077,1048]},
+    {"entity_id":"player-jan-carlo-simic","alias":"Jan-Carlo Simić","language":"en","entity_type":"player","canonical_name":"Jan-Carlo Simić","reviewed":true,"source_event_ids":[955]}
+  ]
+}

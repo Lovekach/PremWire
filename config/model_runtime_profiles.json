@@ -1,0 +1,92 @@
+{
+  "version": "model-runtime-profiles-1.0",
+  "active_profile": "current_laptop",
+  "profiles": {
+    "current_laptop": {
+      "provider": "ollama",
+      "model": "qwen3.5:4b",
+      "base_url": "http://127.0.0.1:11434",
+      "context_length": 4096,
+      "timeout_seconds": 240,
+      "max_parallel_requests": 1,
+      "max_loaded_models": 1,
+      "runtime_root_env": "PREMWIRE_RUNTIME",
+      "runtime_root_default": "runtime",
+      "production_auto_publish": false,
+      "capabilities": {
+        "supports_structured_output": true,
+        "supports_json_schema": true,
+        "supports_tool_calls": false,
+        "context_window": 4096,
+        "recommended_parallelism": 1,
+        "runtime_provider": "ollama",
+        "model_role": "editorial_text"
+      }
+    },
+    "new_laptop_rtx5060_8gb": {
+      "provider": "ollama",
+      "model": "replace-after-new-laptop-benchmark",
+      "model_env": "PREMWIRE_MODEL_NAME",
+      "base_url": "http://127.0.0.1:11434",
+      "context_length": 4096,
+      "timeout_seconds": 240,
+      "max_parallel_requests": 1,
+      "max_loaded_models": 1,
+      "runtime_root_env": "PREMWIRE_RUNTIME",
+      "runtime_root_default": "runtime",
+      "production_auto_publish": false,
+      "capabilities": {
+        "supports_structured_output": true,
+        "supports_json_schema": true,
+        "supports_tool_calls": false,
+        "context_window": 4096,
+        "recommended_parallelism": 1,
+        "runtime_provider": "ollama",
+        "model_role": "editorial_text"
+      }
+    },
+    "new_laptop_rtx5070_8gb": {
+      "provider": "ollama",
+      "model": "qwen3.5:9b",
+      "base_url": "http://127.0.0.1:11434",
+      "context_length": 4096,
+      "timeout_seconds": 240,
+      "max_parallel_requests": 1,
+      "max_loaded_models": 1,
+      "runtime_root_env": "PREMWIRE_RUNTIME",
+      "runtime_root_default": "D:/PremWireRuntime",
+      "model_storage": "D:/OllamaModels",
+      "production_auto_publish": false,
+      "capabilities": {
+        "supports_structured_output": true,
+        "supports_json_schema": true,
+        "supports_tool_calls": false,
+        "context_window": 4096,
+        "recommended_parallelism": 1,
+        "runtime_provider": "ollama",
+        "model_role": "editorial_text"
+      }
+    },
+    "test_mock": {
+      "provider": "mock",
+      "model": "deterministic-mock-v1",
+      "base_url": null,
+      "context_length": 4096,
+      "timeout_seconds": 5,
+      "max_parallel_requests": 1,
+      "max_loaded_models": 1,
+      "runtime_root_env": "PREMWIRE_RUNTIME",
+      "runtime_root_default": "runtime-test",
+      "production_auto_publish": false,
+      "capabilities": {
+        "supports_structured_output": true,
+        "supports_json_schema": true,
+        "supports_tool_calls": false,
+        "context_window": 4096,
+        "recommended_parallelism": 1,
+        "runtime_provider": "mock",
+        "model_role": "test"
+      }
+    }
+  }
+}
