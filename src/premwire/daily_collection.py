@@ -14,7 +14,7 @@ from .collectors.x_rss import XFreeRssCollector
 from .models import IncomingItem, Source
 
 
-def telegram_day(source: Source, start: datetime, end: datetime, deadline: float):
+def telegram_day(source: Source, start: datetime, end: datetime, deadline: float, bounded=False):
     items, warnings = {}, []
     before = None
     for _ in range(40):
@@ -25,7 +25,13 @@ def telegram_day(source: Source, start: datetime, end: datetime, deadline: float
         if before is not None:
             url += f"?before={before}"
         try:
-            html = get_text(url, timeout=int(min(10, max(1, deadline - time.monotonic()))))
+            for attempt in range(2 if bounded else 1):
+                try:
+                    html = get_text(url, timeout=min(10, max(.1, deadline - time.monotonic())))
+                    break
+                except (CollectorError, TimeoutError, OSError):
+                    if attempt or not bounded or time.monotonic() >= deadline:
+                        raise
             parsed = parse_telegram_page(html, source)
         except Exception as exc:
             # A later failed page must not discard already fetched publications.
@@ -53,11 +59,11 @@ def telegram_day(source: Source, start: datetime, end: datetime, deadline: float
 
 
 def x_day(sources: tuple[Source, ...], token: str, start: datetime,
-          end: datetime, deadline: float):
+          end: datetime, deadline: float, bounded=False):
     if not sources:
         return [], []
     if not token:
-        batch = XFreeRssCollector(sources).collect()
+        batch = (XFreeRssCollector(sources,deadline=deadline) if bounded else XFreeRssCollector(sources)).collect()
         return [i for i in batch.items if start <= i.published_at < end], [
             *batch.warnings, "X RSS: best-effort latest feeds, full-day coverage not guaranteed"]
     params = {
@@ -75,7 +81,7 @@ def x_day(sources: tuple[Source, ...], token: str, start: datetime,
             break
         try:
             payload = get_json("https://api.x.com/2/tweets/search/recent?" + urlencode(params),
-                               {"Authorization": f"Bearer {token}"}, timeout=10)
+                               {"Authorization": f"Bearer {token}"}, timeout=10 if not bounded else min(10,max(.1,deadline-time.monotonic())))
             if payload.get("errors") and not payload.get("data"):
                 raise CollectorError("X API refused daily search")
         except Exception as exc:
@@ -109,13 +115,13 @@ def x_day(sources: tuple[Source, ...], token: str, start: datetime,
 
 
 def collect_day(sources: tuple[Source, ...], env: dict[str, str],
-                start: datetime, end: datetime, budget_seconds: int = 110, coverage=None):
+                start: datetime, end: datetime, budget_seconds: int = 110, coverage=None, *, bounded=False):
     deadline = time.monotonic() + budget_seconds
-    jobs = [(s.id, telegram_day, (s, start, end, deadline))
+    jobs = [(s.id, telegram_day, (s, start, end, deadline, bounded))
             for s in sources if s.enabled and s.platform == "telegram"]
     x_sources = tuple(s for s in sources if s.enabled and s.platform == "x")
     if x_sources:
-        jobs.append(("x", x_day, (x_sources, env.get("X_BEARER_TOKEN", ""), start, end, deadline)))
+        jobs.append(("x", x_day, (x_sources, env.get("X_BEARER_TOKEN", ""), start, end, deadline, bounded)))
     items, warnings = [], []
     for source in sources:
         if source.enabled and source.platform not in {"telegram", "x"}:
@@ -123,11 +129,12 @@ def collect_day(sources: tuple[Source, ...], env: dict[str, str],
             if coverage is not None:
                 coverage.append({"source_id": source.id, "platform": source.platform,
                                  "status": "NOT_POLLED", "count": 0})
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    pool = ThreadPoolExecutor(max_workers=8)
+    try:
         futures = [(name, pool.submit(fn, *args)) for name, fn, args in jobs]
         for name, future in futures:
             try:
-                found, notes = future.result()
+                found, notes = future.result(timeout=max(0,deadline-time.monotonic())) if bounded else future.result()
                 items.extend(found)
                 warnings.extend(notes)
                 if coverage is not None:
@@ -146,4 +153,9 @@ def collect_day(sources: tuple[Source, ...], env: dict[str, str],
                 warnings.append(f"{name}: unavailable ({type(exc).__name__})")
                 if coverage is not None:
                     coverage.append({"source_id": name, "status": "UNAVAILABLE", "count": 0})
+    finally:
+        # Optional immutable route can proceed with healthy sources even if a
+        # native DNS/read ignores its socket timeout. The finite supervisor owns
+        # process cleanup; late futures never write a cache or ledger.
+        pool.shutdown(wait=not bounded,cancel_futures=bounded)
     return items, warnings

@@ -31,7 +31,7 @@ from .simple_entity_hygiene import check_simple_entity_hygiene, check_source_loc
 from .simple_source_risk import analyze_simple_source_risks, dynamic_risk_instructions
 from .storage import Storage, build_event_identity, compare_event_identity, same_story_text, _shared_player, _latin_name
 from .text_editor import OllamaTextEditor, factual_consistency_issues, is_russian_text
-from .telegram_api import TelegramBotApi
+from .telegram_api import TelegramBotApi, TelegramApiError
 
 MOSCOW = timezone(timedelta(hours=3), "Europe/Moscow")
 STAGES = {v: i for i, v in enumerate(("TRANSFER_UPDATE", "INTEREST", "CONTACT", "TALKS",
@@ -213,7 +213,7 @@ def filter_items(items, start, end, suppressed=(), filter_config=None):
                 if gate.reason == "caption_without_news_action" and (explicit_result or explicit_milestone or medical):
                     continue
                 reason = gate.reason
-        if re.search(r"(?:смотрим\s+(?:главный\s+)?матч|смотри\s+игру|смотреть|"
+        if re.search(r"(?:смотрим\s+(?:главный\s+)?матч|смотри\s+игру|\bсмотреть\b|"
                      r"комментаторы\s+вышли|dazn\s+bet|призывают[\s\S]{0,80}приобрести)", item.text, re.I):
             reason = "DAILY_PROMOTION_OR_FAN_CAMPAIGN"
         if re.search(r"(?:biggest\s+dream|so\s+happy|so\s+emotional|for\s+you,?\s+my\s+sister|"
@@ -227,7 +227,8 @@ def filter_items(items, start, end, suppressed=(), filter_config=None):
         quote = re.search(r"^[^\n]{1,180}:\s*[“«\"]", item.text)
         actual_development = re.search(
             r"\b(?:signed|appointed|sacked|injured|fracture|surgery|retire\w*|agreed|"
-            r"will\s+miss|увол\w*|назнач\w*|подпис\w*|переш\w*|пропуст\w*|травм\w*|операци\w*)\b", item.text, re.I)
+            r"will\s+miss|увол\w*|назнач\w*|подпис\w*|переш\w*|пропуст\w*|травм\w*|операци\w*)\b|"
+            r"«[^»]+» и [А-ЯЁ][а-яё]+(?: [А-ЯЁ][а-яё]+){0,2} достигли договор[её]нности о продлении контракта", item.text, re.I)
         if quote and not (actual_development or medical):
             reason = "DAILY_ROUTINE_QUOTE_WITHOUT_NEW_EVENT"
         ttl = transient_ttl_minutes(item.text)
@@ -590,7 +591,7 @@ class DigestLedger:
         return row[0] if row else None
 
 
-def publish_prepared(ledger, day: date, body: str, api, channel, *, now=None):
+def publish_prepared(ledger, day: date, body: str, api, channel, *, now=None, deadline=None):
     current = now or datetime.now(MOSCOW)
     if not publication_window(current) or current.astimezone(MOSCOW).date() != day:
         raise RuntimeError("PUBLICATION_WINDOW_EXPIRED")
@@ -598,11 +599,31 @@ def publish_prepared(ledger, day: date, body: str, api, channel, *, now=None):
         raise RuntimeError("INVALID_TELEGRAM_DIGEST_LENGTH")
     if ledger.get_state(day.isoformat()) != "STARTED":
         raise RuntimeError("DAILY_DELIVERY_ALREADY_HANDLED_OR_AMBIGUOUS")
-    ledger.state(day.isoformat(), "SENDING", body)
-    # Committed before the only network send. Never retry ambiguous delivery.
-    message_id = api.send_text(channel, html.escape(body))
-    ledger.state(day.isoformat(), "PUBLISHED", body, message_id)
-    return message_id
+    for attempt in range(2):
+        current = now or datetime.now(MOSCOW)
+        if (not publication_window(current) or current.date() != day or
+                (deadline is not None and clock.monotonic() >= deadline)):
+            raise RuntimeError("PUBLICATION_WINDOW_EXPIRED")
+        ledger.state(day.isoformat(), "SENDING", body)
+        try:
+            message_id = api.send_text(channel, html.escape(body))
+        except TelegramApiError as error:
+            if not error.rejected:
+                raise  # Timeout, 5xx, invalid JSON: preserve SENDING forever.
+            ledger.state(day.isoformat(), "FAILED_PRE_SEND", body)
+            delay = error.retry_after
+            if (attempt or type(delay) is not int or not 0 <= delay <= 5 or
+                    (deadline is not None and clock.monotonic() + delay + 20 >= deadline)):
+                raise
+            # Flood-control rejection explicitly permits a bounded retry. No
+            # generic connection/HTTP exception is interpreted as non-delivery.
+            clock.sleep(delay)
+            ledger.state(day.isoformat(), "STARTED", body)
+            continue
+        if type(message_id) is not int or message_id <= 0:
+            raise RuntimeError("INVALID_TELEGRAM_RECEIPT")
+        ledger.state(day.isoformat(), "PUBLISHED", body, message_id)
+        return message_id
 
 
 def owner_paused(config):
@@ -702,166 +723,336 @@ class BatchOllama:
                 self.process.wait(timeout=10)
 
 
+DAILY_PIPELINE_REVISION = "immutable-production-20261017-v2"
+
+
+def empty_edition_reason(items, warnings, audit):
+    """Distinguish coverage/parser/processing/dedupe failures from no news."""
+    if not items:
+        return 'SOURCE_COVERAGE_INCOMPLETE' if warnings else 'NO_SOURCE_NEWS'
+    unsupported = audit.get('unsupported', [])
+    if any(str(e.get('reason', '')).startswith('MALFORMED_')
+           for e in unsupported + audit.get('rejected', [])):
+        return 'SOURCE_PROCESSING_FAILURE'
+    if any(str(e.get('reason', '')).startswith(('UNSUPPORTED_', 'AMBIGUOUS_')) for e in unsupported):
+        return 'SOURCE_PARSER_COVERAGE_FAILURE'
+    decisions = audit.get('final_digest_gate', [])
+    if any(e.get('decision') == 'REJECT' and 'DEDUPE' in str(e.get('reason', '')) for e in decisions):
+        return 'NO_NEW_EVENTS_AFTER_DEDUPE'
+    return 'NO_EDITORIALLY_SAFE_EVENTS'
+
+
+def _atomic_diagnostic(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _published_context(root, state, store, day, filters):
+    """Legacy migration reads only receipt-matching printed facts, never rewrites."""
+    from .daily_fact_digest import build_bundles
+    from .daily_strategy import confirmed_published_history
+    history = store.history(day.isoformat(),publication_clocks=True)
+    cutoff = None
+    notes = []
+    rows = state.db.execute(
+        "SELECT d.day,d.artifact,p.body FROM daily_editions d JOIN daily_digest p USING(day) "
+        "WHERE p.state='PUBLISHED' AND p.message_id IS NOT NULL AND d.day<? "
+        "ORDER BY d.day DESC LIMIT 3", (day.isoformat(),)).fetchall()
+    artifact_root = (root / "artifacts").resolve()
+    for previous_day, folder, published_body in rows:
+        folder = Path(folder).resolve()
+        if not folder.is_relative_to(artifact_root):
+            notes.append("HISTORY_ARTIFACT_OUTSIDE_PROJECT")
+            continue
+        try:
+            report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
+            if (report.get("mode") != "LIVE" or report.get("day") != previous_day or
+                    report.get("body") != published_body):
+                raise ValueError("Receipt does not match report")
+            lower, upper = map(datetime.fromisoformat, (report["window_start"], report["window_end"]))
+            if not lower.tzinfo or not upper.tzinfo or lower >= upper:
+                raise ValueError("Invalid source window")
+            if cutoff is None:
+                cutoff = upper
+            has_facts = state.db.execute(
+                "SELECT 1 FROM immutable_prepared WHERE day=? UNION ALL "
+                "SELECT 1 FROM immutable_receipts WHERE day=?", (previous_day, previous_day)).fetchone()
+            if has_facts:
+                continue
+            published = [row for row in report["selected_sources"] if row["text"] in published_body]
+            urls = {row["source"]["canonical_url"] for row in published}
+            originals = json.loads((folder / "sources.json").read_text(encoding="utf-8"))
+            inputs = [IncomingItem(**dict(row, published_at=datetime.fromisoformat(row["published_at"])))
+                      for row in originals if row["canonical_url"] in urls]
+            recovered, _ = build_bundles(inputs, lower, upper, filters)
+            proved, _ = confirmed_published_history(recovered, published)
+            history.extend(proved)
+        except (OSError, ValueError, KeyError, TypeError):
+            notes.append("LEGACY_HISTORY_UNAVAILABLE_OR_UNPROVEN")
+    return cutoff, history, notes
+
+
+def finalize_interrupted_health(root, launched, exit_code):
+    """Finite supervisor post-check. Never sends, resets receipts or runs a model."""
+    path = root / "data/daily-health.json"
+    if not path.is_file():
+        return
+    health = json.loads(path.read_text(encoding="utf-8"))
+    if not health.get("running") or datetime.fromisoformat(health["started_at"]) < launched:
+        return
+    with closing(sqlite3.connect((root / "data/daily-text-digest.sqlite3").as_uri() + "?mode=ro", uri=True)) as db:
+        row = db.execute("SELECT state,message_id FROM daily_digest WHERE day=?", (health["day"],)).fetchone()
+    confirmed = bool(row and row[0] == "PUBLISHED" and row[1] is not None)
+    health.update(running=False, finished_at=datetime.now(MOSCOW).isoformat(),
+                 status="PARTIAL_SUCCESS" if confirmed else "FAILED",
+                 telegram_status=row[0] if row else "NOT_SENT",
+                 message_id=row[1] if confirmed else None,
+                 reason="SUPERVISOR_INTERRUPTED_BATCH", exit_code=int(exit_code),
+                 elapsed_seconds=round((datetime.now(MOSCOW)-datetime.fromisoformat(health["started_at"])).total_seconds(), 3))
+    _atomic_diagnostic(path, health)
+    folder = Path(health["artifact"]).resolve()
+    if folder.is_relative_to((root / "artifacts/daily-text-digest").resolve()):
+        _atomic_diagnostic(folder / "health.json", health)
+
+
 def run_daily(root: Path, *, confirm=False, cached=False, shadow_date=None, shadow_input=None, prepare=False, config_override=None):
-    from .daily_strategy import DailyState, cached_rewrite, accumulated_items, adapt_telegram, publish_secondary
-    if prepare and (confirm or cached or shadow_date or shadow_input):
-        raise ValueError("PREPARE_REQUIRES_CURRENT_DAY_WITHOUT_DELIVERY")
+    """The one scheduled production route: immutable facts, zero Qwen calls."""
+    from .daily_strategy import DailyState, accumulated_items, publish_secondary
+    from .daily_fact_e2e import PublishedFactStore, prepare_immutable_edition, publication_adapter
+    root = root.resolve()
     started = datetime.now(MOSCOW)
     ticks = clock.monotonic()
-    if confirm and (cached or shadow_date or shadow_input or not daily_mode(root)):
-        raise ValueError("LIVE_REQUIRES_DAILY_MODE_AND_FRESH_CURRENT_DAY")
-    if confirm and not publication_window(started):
-        print("NOT_DUE: 20:56–21:04 Europe/Moscow only")
-        return 0
-    config = config_override if config_override is not None else load_config(root)
-    env = load_env(root / ".env")
-    if confirm and (not config.production.enabled or config.publishing.dry_run):
-        raise RuntimeError("Production is disabled or dry-run")
-    if (confirm or prepare) and owner_paused(config):
-        raise RuntimeError("PAUSED_BY_OWNER")
-    lock = ProcessLock(root / "data/daily-text-digest.lock")
-    if not lock.acquire():
-        print("BUSY: another daily batch is running")
-        return 0
-    ledger = None
-    state = None
     day = started.date()
+    suffix = "live" if confirm else "prepare" if prepare else "shadow"
+    output = root / "artifacts/daily-text-digest" / (started.strftime("%Y%m%d-%H%M%S-%f") + "-" + suffix)
+    health = dict(day=day.isoformat(), started_at=started.isoformat(), finished_at=None,
+                  pipeline=DAILY_PIPELINE_REVISION, mode=suffix.upper(), running=True,
+                  status="FAILED", telegram_status="NOT_SENT", message_id=None,
+                  source_count=0, accepted_count=0, rejected_count=0, published_events=0,
+                  exclusion_reasons={}, telegram_utf16_length=0, phases_seconds={},
+                  llm_calls=0, artifact=str(output))
+    state = ledger = lock = None
+    result = None
+    phase = 'CONFIGURATION_AND_LEDGER'
     try:
-        coverage = []
-        state = DailyState(root / (Path("data/daily-text-digest.sqlite3") if confirm or prepare else
-                                   Path("artifacts/daily-shadow-state") / (started.strftime("%Y%m%d-%H%M%S") + ".sqlite3")))
+        _atomic_diagnostic(output / "health.json", health)
+        if prepare and (confirm or cached or shadow_date or shadow_input):
+            raise ValueError("PREPARE_REQUIRES_CURRENT_DAY_WITHOUT_DELIVERY")
+        if confirm and (cached or shadow_date or shadow_input or not daily_mode(root)):
+            raise ValueError("LIVE_REQUIRES_DAILY_MODE_AND_FRESH_CURRENT_DAY")
+        if confirm and not publication_window(started):
+            health.update(status="SKIPPED_UNSAFE", reason="NOT_DUE")
+            return 0
+        if config_override is not None and (confirm or prepare):
+            raise ValueError('CONFIG_OVERRIDE_SHADOW_ONLY')
+        config = config_override if config_override is not None else load_config(root)
+        env = load_env(root / ".env")
+        if confirm and (not config.production.enabled or config.publishing.dry_run):
+            raise RuntimeError("PRODUCTION_DISABLED_OR_DRY_RUN")
+        if (confirm or prepare) and owner_paused(config):
+            raise RuntimeError("PAUSED_BY_OWNER")
+        if confirm and not env.get("TELEGRAM_BOT_TOKEN"):
+            raise RuntimeError("TELEGRAM_CREDENTIAL_MISSING")
+        live_state = confirm or prepare
+        lock = ProcessLock(root / "data/daily-text-digest.lock" if live_state else output / "shadow.lock")
+        if not lock.acquire():
+            health.update(status="SKIPPED_UNSAFE", reason="BUSY")
+            return 0
+        database = root / "data/daily-text-digest.sqlite3" if live_state else output / "immutable-shadow.sqlite3"
+        ledger = DigestLedger(database)
+        state = DailyState(database)
+        store = PublishedFactStore(state.db)
+        if confirm and not ledger.claim(day.isoformat()):
+            row = state.db.execute("SELECT state,body,message_id FROM daily_digest WHERE day=?", (day.isoformat(),)).fetchone()
+            health.update(status="SUCCESS" if row and row[0] == "PUBLISHED" else "SKIPPED_UNSAFE",
+                          reason="ALREADY_HANDLED_OR_AMBIGUOUS", telegram_status=row[0] if row else "NOT_SENT",
+                          message_id=row[2] if row else None)
+            # A crash after receipt but before mark_included is repaired locally.
+            frozen = state.db.execute("SELECT full_body,members FROM daily_editions WHERE day=?", (day.isoformat(),)).fetchone()
+            if row and row[0] == "PUBLISHED" and frozen and frozen[0] == row[1]:
+                store.history((day + timedelta(days=1)).isoformat())  # receipt-bound manifest validation
+                with state.db:
+                    state.db.executemany("UPDATE daily_sources SET included_day=? WHERE source_id=? AND external_id=?",
+                                         [(day.isoformat(), *key) for key in json.loads(frozen[1])])
+            return 0
+        if confirm:
+            _atomic_diagnostic(root / "data/daily-health.json", health)
+        phase = 'HISTORY'
+        timer = clock.monotonic()
+        cutoff, history, notes = _published_context(root, state, store, day, config.filters)
         start, end = day_window(started)
+        if cutoff is not None and cutoff < end:
+            # Retain late unprinted news, but never backfill arbitrarily old days.
+            start = max(cutoff, start - timedelta(days=2))
+        coverage = []
+        fresh_count = 0
         if cached or shadow_input:
             if shadow_input:
                 records = json.loads(Path(shadow_input).read_text(encoding="utf-8"))
-                items = [IncomingItem(**dict(r, published_at=datetime.fromisoformat(r["published_at"]))) for r in records]
+                items = [IncomingItem(**dict(row, published_at=datetime.fromisoformat(row["published_at"]))) for row in records]
             else:
                 items = cached_items(config)
             day = date.fromisoformat(shadow_date) if shadow_date else max(
-                (i.published_at.astimezone(MOSCOW).date() for i in items), default=started.date())
+                (item.published_at.astimezone(MOSCOW).date() for item in items), default=day)
             start = datetime.combine(day, time.min, MOSCOW)
             end = min(start + timedelta(days=1), started)
-            warnings = ["SHADOW: cached day; not a fresh production source scan"]
-            if shadow_input:
-                provenance = Path(shadow_input).parent / "report.json"
-                if provenance.is_file():
-                    previous = json.loads(provenance.read_text(encoding="utf-8"))
-                    if previous.get("day") == day.isoformat():
-                        end = min(end, datetime.fromisoformat(previous["window_end"]))
-                        warnings.extend(previous.get("warnings", []))
+            health["day"] = day.isoformat()
+            warnings = ["SHADOW_SAVED_SOURCE_NOT_NETWORK"]
         else:
-            if confirm:
-                ledger = DigestLedger(root / "data/daily-text-digest.sqlite3")
-                if not ledger.claim(day.isoformat()):
-                    print("ALREADY_HANDLED_OR_AMBIGUOUS: no Telegram retry")
-                    return 0
-            print(f"COLLECT_DAY: {start.isoformat()} -> {end.isoformat()}", flush=True)
-            items, warnings = collect_day(config.sources, env, start, end, coverage=coverage)
-            # Journal each source publication before cross-source deduplication.
+            health["phases_seconds"]["history_load"] = round(clock.monotonic() - timer, 3)
+            timer = clock.monotonic()
+            phase = 'COLLECTION_AND_INGESTION'
+            items, warnings = collect_day(config.sources, env, start, end, budget_seconds=90,
+                                          coverage=coverage, bounded=True)
+            fresh_count = len(items)
             state.accumulate(items)
             items = accumulated_items(state, config, start, end)
-        accepted, rejected = filter_items(items, start, end, suppression_texts(config), config.filters)
-        consolidations = []
-        deduped, conflicts = collapse(accepted, audit=consolidations)
-        candidates = shortlist(deduped)
-        print(f"SELECTION: raw={len(items)}, filtered={len(accepted)}, deduped={len(deduped)}, "
-              f"shortlist={len(candidates)}", flush=True)
-        if candidates and not state.all_cached(candidates):
-            editor = OllamaTextEditor(replace(config.editor, timeout_seconds=15))
-            with BatchOllama(editor):
-                stories, generation_rejects = cached_rewrite(state, editor, candidates, ticks + (420 if not prepare else 1200), rewrite_batch)
-            rejected.extend(generation_rejects)
-            trace = editor.daily_trace
-        else:
-            stories, generation_rejects = cached_rewrite(state, None, candidates, ticks, rewrite_batch)
-            rejected.extend(generation_rejects)
-            trace = []
-        # Recheck owner/source tombstones after potentially long generation.
-        live_suppressions = suppression_texts(config)
-        removed = [s for s in stories if any(suppression_matches(s.source, old) for old in live_suppressions)]
-        rejected.extend({"url": s.source.canonical_url, "reason": "SUPPRESSED_DURING_GENERATION"} for s in removed)
-        stories = [s for s in stories if s not in removed]
-        # Whole-edition gate also runs on cached drafts and on deterministically
-        # appended credits. A bad member cannot block sound independent stories.
-        final_checks = []
-        safe_stories = []
-        for story in stories:
-            issues = digest_factual_issues(story.source.text, story.text)
-            final_checks.append({"url": story.source.canonical_url, "issues": issues,
-                                 "decision": "REJECT" if issues else "ALLOW"})
-            if issues:
-                rejected.append({"url": story.source.canonical_url, "reason": issues,
-                                 "stage": "FINAL_EDITION_GATE"})
-            else:
-                safe_stories.append(story)
-        stories = safe_stories
-        full_body, full_selected = render_digest(stories, day, limit=None)
-        body, selected = adapt_telegram(full_selected, day, render_digest)
-        short_urls = {i.canonical_url for i in candidates}
-        selected_urls = {s.source.canonical_url for s in selected}
-        rejected.extend({"url": i.canonical_url, "reason": "SHORTLIST_PRIORITY_OR_DIVERSITY_LIMIT"}
-                        for i in deduped if i.canonical_url not in short_urls)
-        rejected.extend({"url": s.source.canonical_url, "reason": "DIGEST_LENGTH_DIVERSITY_OR_DUPLICATE_LIMIT"}
-                        for s in stories if s.source.canonical_url not in selected_urls)
-        rejected.extend(conflicts)
-        rejected.extend(consolidations)
-        result = {"mode": "LIVE" if confirm else ("PREPARE" if prepare else "SHADOW"), "day": day.isoformat(),
-                  "window_start": start.isoformat(), "window_end": end.isoformat(),
-                  "raw_count": len(items), "filtered_count": len(accepted), "deduped_count": len(deduped),
-                  "shortlist_count": len(candidates), "selected_count": len(selected), "full_selected_count": len(full_selected),
-                  "telegram_utf16_length": telegram_length(body), "warnings": warnings,
-                  "source_coverage": coverage,
-                  "final_checks": final_checks,
-                  "target_range": [2500, 3900],
-                  "length_note": "Below target; never padded" if telegram_length(body) < 2500 else "Within target",
-                  "rejected": rejected, "conflicts": conflicts, "body": body,
-                  "selected_sources": [asdict(s) for s in selected],
-                  "full_selected_sources": [asdict(s) for s in full_selected],
-                  "generation_trace": trace,
-                  "elapsed_seconds": round(clock.monotonic() - ticks, 2)}
-        output = root / "artifacts/daily-text-digest" / (started.strftime("%Y%m%d-%H%M%S") + ("-live" if confirm else ("-prepare" if prepare else "-shadow")))
-        output.mkdir(parents=True, exist_ok=True)
-        (output / "sources.json").write_text(json.dumps([asdict(i) for i in items], ensure_ascii=False,
-                                                       indent=2, default=str), encoding="utf-8")
-        (output / "report.json").write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+            health["phases_seconds"]["source_collection_and_ingestion"] = round(clock.monotonic() - timer, 3)
+        warnings.extend(notes)
+        health.update(source_count=len(items), fresh_source_count=fresh_count, source_coverage=coverage)
+        suppressed = suppression_texts(config)
+        usable = [item for item in items if not any(suppression_matches(item, old) for old in suppressed)]
+        removed = [{"url": item.canonical_url, "reason": "SOURCE_SUPPRESSED"} for item in items if item not in usable]
+        phase = 'FACT_BUNDLE_AND_FINAL_GATE'
+        immutable = prepare_immutable_edition(usable, start, end, config.filters, history=history,
+                                              edition_day=day)  # style_chat deliberately absent
+        # Recheck deletions/owner controls immediately before freezing.
+        latest = suppression_texts(config)
+        remaining = [item for item in usable if not any(suppression_matches(item, old) for old in latest)]
+        if len(remaining) != len(usable):
+            removed.extend({"url": item.canonical_url, "reason": "SUPPRESSED_DURING_PREPARATION"}
+                           for item in usable if item not in remaining)
+            usable = remaining
+            immutable = prepare_immutable_edition(usable, start, end, config.filters, history=history, edition_day=day)
+        health["phases_seconds"].update({key: round(value, 3) for key, value in immutable["phases"].items()})
+        bridge = publication_adapter(immutable, usable, config.publishing.channel)
+        body, stories = bridge["body"], bridge["stories"]
+        audit = immutable["audit"]
+        match_coverage = audit.get('match_coverage', {})
+        health['match_coverage'] = match_coverage
+        if body and match_coverage.get('status') != 'COVERAGE_OK':
+            warnings.append('MATCH_COVERAGE: '+match_coverage.get('status','COVERAGE_UNKNOWN')+
+                            ' ('+match_coverage.get('reason','UNVERIFIED')+')')
+        rejected = removed + [entry for key in ("rejected", "unsupported", "conflicts", "context_omissions")
+                              for entry in audit.get(key, [])]
+        rejected.extend(entry for entry in audit.get("final_digest_gate", []) if entry.get("decision") == "REJECT")
+        rejected.extend(entry for entry in audit.get("editorial_freshness", []) if entry.get("decision") == "REJECT")
+        rejected.extend(entry for entry in audit.get("editorial_value_gate", []) if entry.get("decision") == "REJECT")
+        rejected.extend(entry for key in ('freshness_gate','statistics_gate','match_enrichment') for entry in audit.get(key, []) if entry.get('decision')=='REJECT')
+        represented = {item.canonical_url for item in bridge["represented_originals"]}
+        # The audit retains initial filter refusals plus explicit recoveries.
+        # Health/final exclusions must not count a successfully recovered SOURCE.
+        rejected = [entry for entry in rejected
+                    if not set(entry.get('sources', (entry.get('url'),))).issubset(represented)]
+        reasons = {}
+        for entry in rejected:
+            reason = entry.get("reason", "UNSPECIFIED_SAFE_EXCLUSION")
+            for code in (reason if isinstance(reason, list) else [reason]):
+                reasons[str(code)] = reasons.get(str(code), 0) + 1
+        health.update(accepted_count=len(stories), rejected_count=len({item.canonical_url for item in items} - represented),
+                      exclusion_reasons=reasons, telegram_utf16_length=telegram_length(body),
+                      essential_facts_checked=immutable["essential_facts_checked"],
+                      essential_facts_lost=immutable["essential_facts_lost"], distorted_events=immutable["distorted_events"],
+                      warnings=warnings, destination=config.publishing.channel)
+        result = dict(mode=suffix.upper(), pipeline=DAILY_PIPELINE_REVISION, day=day.isoformat(),
+                      window_start=start.isoformat(), window_end=end.isoformat(), raw_count=len(items),
+                      selected_count=len(stories), telegram_utf16_length=telegram_length(body),
+                      warnings=warnings, source_coverage=coverage, rejected=rejected, audit=audit, body=body,
+                      selected_sources=[asdict(story) for story in stories],
+                      full_selected_sources=[asdict(story) for story in stories],
+                      bundles=[asdict(bundle) for bundle in immutable["selected"]],
+                      generation_trace=[], llm_calls=0, phases_seconds=health["phases_seconds"],
+                      **{key: immutable[key] for key in ("essential_facts_checked", "essential_facts_lost",
+                                                       "distorted_events", "provenance_issues")})
+        _atomic_diagnostic(output / "sources.json", [asdict(item) for item in usable])
+        _atomic_diagnostic(output / "report.json", result)
         (output / "preview.txt").write_text(body, encoding="utf-8")
-        (output / "full.txt").write_text(full_body, encoding="utf-8")
-        print(f"Daily Digest candidates: {len(items)}", flush=True)
-        print(f"After deduplication: {len(deduped)}", flush=True)
-        print(f"Selected important stories: {len(full_selected)}", flush=True)
-        print("Digest generated", flush=True)
-        if confirm:
-            if ledger is None:
-                raise RuntimeError('PUBLICATION_LEDGER_REQUIRED')
-            if not body:
-                ledger.state(day.isoformat(), "NO_NEWS" if not candidates else "FAILED_PRE_SEND")
-                print("NO_NEWS" if not candidates else "FACTUAL_OR_GENERATION_GATE_FAILED")
-                return 0 if not candidates else 1
-            if not publication_window(datetime.now(MOSCOW)) or datetime.now(MOSCOW).date() != day:
-                ledger.state(day.isoformat(), "FAILED_PRE_SEND", body)
-                raise RuntimeError("PUBLICATION_WINDOW_EXPIRED: no late delivery")
-            token = env.get("TELEGRAM_BOT_TOKEN", "")
-            if not token:
-                raise RuntimeError("Telegram credential missing")
-            if owner_paused(config):
-                raise RuntimeError("PAUSED_BY_OWNER")
-            state.freeze(day, full_body, output, full_selected, items)
-            message_id = publish_prepared(ledger, day, body, TelegramBotApi(token), config.publishing.channel)
-            state.mark_included(day, full_selected, items)
-            print("Telegram published", flush=True)
-            secondary = publish_secondary(state, config, day, full_body, full_selected)
-            result["platform_delivery"] = secondary
-            (output / "report.json").write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-            print("Daily Digest completed", flush=True)
-            print(f"PUBLISHED: {day}, message_id={message_id}")
-        print(json.dumps({k: v for k, v in result.items() if k not in {"rejected", "selected_sources", "full_selected_sources", "generation_trace", "body"}},
-                         ensure_ascii=False, indent=2, default=str))
-        print(f"ARTIFACT: {output}")
-        print(body)
+        if not body:
+            reason = empty_edition_reason(items, warnings, audit)
+            failed = reason in {'SOURCE_COVERAGE_INCOMPLETE', 'SOURCE_PARSER_COVERAGE_FAILURE', 'SOURCE_PROCESSING_FAILURE'}
+            health.update(status="FAILED" if failed else "SKIPPED_UNSAFE", reason=reason,
+                          failure_stage=phase, parser_unsupported_count=len(audit.get('unsupported', [])),
+                          source_decisions=rejected)
+            if confirm:
+                ledger.state(day.isoformat(), "FAILED_PRE_SEND" if failed else "NO_NEWS")
+            return 1 if failed else 0
+        if not confirm:
+            health.update(status="PARTIAL_SUCCESS" if warnings else "SUCCESS", telegram_status="PREPARED_NOT_SENT")
+            return 0
+        if owner_paused(config):
+            raise RuntimeError("PAUSED_BY_OWNER")
+        deadline = ticks + 450  # reserve supervisor cleanup; no model delays
+        if clock.monotonic() + 20 >= deadline:
+            raise RuntimeError("BATCH_DELIVERY_BUDGET_EXPIRED")
+        phase = 'PUBLICATION_AND_RECEIPT'
+        timer = clock.monotonic()
+        state.freeze(day, body, output, stories, bridge["represented_originals"], exact_members=True)
+        store.stage(day.isoformat(), body, immutable["selected"], DAILY_PIPELINE_REVISION)
+        health.update(telegram_status="SENDING")
+        _atomic_diagnostic(root / "data/daily-health.json", health)
+        message_id = publish_prepared(ledger, day, body, TelegramBotApi(env["TELEGRAM_BOT_TOKEN"]),
+                                      config.publishing.channel, deadline=deadline)
+        store.record(day.isoformat(), body, immutable["selected"], DAILY_PIPELINE_REVISION)
+        state.mark_included(day, stories, bridge["represented_originals"], exact_members=True)
+        health["phases_seconds"]["telegram_publication_and_receipt"] = round(clock.monotonic() - timer, 3)
+        health.update(telegram_status="PUBLISHED", message_id=message_id, published_events=len(stories),
+                      status="PARTIAL_SUCCESS" if warnings else "SUCCESS")
+        _atomic_diagnostic(root / "data/daily-health.json", health)
+        # Existing secondary services/settings are retained, isolated from Telegram.
+        timer = clock.monotonic()
+        secondary = publish_secondary(state, config, day, body, stories)
+        health["phases_seconds"]["existing_secondary_delivery"] = round(clock.monotonic() - timer, 3)
+        result["platform_delivery"] = secondary
+        if any(value not in {"PUBLISHED", "DISABLED"} for value in secondary.values()):
+            health["status"] = "PARTIAL_SUCCESS"
+        _atomic_diagnostic(output / "report.json", result)
         return 0
+    except Exception as error:
+        health.update(status="SKIPPED_UNSAFE" if isinstance(error, ValueError) else "FAILED",
+                      reason=type(error).__name__, failure_stage=phase)  # Never arbitrary exception strings.
+        frames = []
+        traceback = error.__traceback__
+        while traceback is not None:
+            frame = traceback.tb_frame
+            filename = Path(frame.f_code.co_filename).resolve()
+            if filename.is_relative_to(root):
+                frames.append(dict(file=str(filename.relative_to(root)), function=frame.f_code.co_name,
+                                   line=traceback.tb_lineno))
+            traceback = traceback.tb_next
+        health['failure_frames'] = frames  # No exception values, locals or credentials.
+        if ledger is not None and confirm:
+            delivery = ledger.get_state(day.isoformat())
+            health["telegram_status"] = delivery or "NOT_SENT"
+            if delivery == "STARTED":
+                ledger.state(day.isoformat(), "FAILED_PRE_SEND")
+            elif delivery == "PUBLISHED":
+                health["status"] = "PARTIAL_SUCCESS"
+                row = ledger.db.execute("SELECT message_id FROM daily_digest WHERE day=?", (day.isoformat(),)).fetchone()
+                health["message_id"] = row[0]
+        print("DAILY_IMMUTABLE_FAILED: " + type(error).__name__, flush=True)
+        return 1
     finally:
-        if state is not None:
-            state.db.close()
-        if ledger is not None:
-            ledger.db.close()
-        lock.release()
+        health.update(running=False, finished_at=datetime.now(MOSCOW).isoformat(),
+                      elapsed_seconds=round(clock.monotonic() - ticks, 3))
+        try:
+            _atomic_diagnostic(output / "health.json", health)
+            if confirm:
+                _atomic_diagnostic(root / "data/daily-health.json", health)
+            if state is not None:
+                with state.db:
+                    state.db.execute("CREATE TABLE IF NOT EXISTS daily_health (run_id TEXT PRIMARY KEY, day TEXT, payload TEXT)")
+                    state.db.execute("INSERT OR REPLACE INTO daily_health VALUES (?,?,?)",
+                                     (output.name, day.isoformat(), json.dumps(health, ensure_ascii=False, default=str)))
+            print(json.dumps({key: health[key] for key in ("day", "pipeline", "status", "telegram_status",
+                                                           "message_id", "source_count", "accepted_count",
+                                                           "published_events", "llm_calls", "elapsed_seconds")}), flush=True)
+            print("ARTIFACT: " + str(output), flush=True)
+        finally:
+            if state is not None:
+                state.db.close()
+            if ledger is not None:
+                ledger.db.close()
+            if lock is not None:
+                lock.release()

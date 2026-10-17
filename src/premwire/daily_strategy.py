@@ -24,6 +24,46 @@ def source_key(item):
                                     ensure_ascii=False)).encode()).hexdigest()
 
 
+def confirmed_published_history(bundles, published_stories):
+    """Opt-in immutable shadow history, based on ACTUALLY printed facts.
+
+    A selected SOURCE is not proof every detail was published. Legacy free-form
+    editions have no fact ledger: accept exact approved wording or a narrow,
+    explicit points/rounds relation, otherwise keep the evidence unresolved.
+    New immutable editions should persist their validated fact signatures.
+    This function is not called by the current live daily route.
+    """
+    from .daily_quality import clubs
+    history=[];review=[]
+    numeral_forms={'шесть':'6','шести':'6','шестью':'6','сорок':'40','сорока':'40'}
+    for bundle in bundles:
+        texts=[row['text'] for row in published_stories
+               if row['source']['canonical_url'] in bundle.source_refs]
+        verified=[]
+        for fact in bundle.verified_facts:
+            proven=any(wording in text for text in texts for wording in fact.formulations)
+            for text in texts:
+                normalized=text.casefold()
+                for word,value in numeral_forms.items():
+                    normalized=re.sub(r'\b'+word+r'\b',value,normalized)
+                if fact.key=='points' and len(fact.values)==3:
+                    club,points,games=fact.values
+                    if club in clubs(text) and re.search(
+                        rf'набрал\w*\s+{re.escape(points)}\s+очк\w*\s+в\s+(?:первых\s+)?{re.escape(games)}\s+(?:матч\w*|тур\w*)',normalized):
+                        proven=True
+                if fact.key=='record' and len(fact.values)==1:
+                    if set(bundle.participants)&clubs(text) and re.search(
+                        rf'худш\w*\s+старт.*?{re.escape(fact.values[0])}\s+лет',normalized):
+                        proven=True
+            if proven:verified.append(fact)
+            review.append(dict(event_id=bundle.event_id,fact=fact.key,published_evidence=proven))
+        if verified:
+            keys={f.key for f in verified}
+            history.append(replace(bundle,verified_facts=tuple(verified),
+                                   essential_facts=tuple(k for k in bundle.essential_facts if k in keys)))
+    return history,review
+
+
 def merge_source_context(winner, group):
     """Retain explicit supplementary terms, never earlier status/score rumours."""
     fields = (r'fee|million|млн|миллион|сумм\w*|стоимост\w*',
@@ -69,10 +109,22 @@ class DailyState:
         self.db.commit()
 
     def accumulate(self, items):
+        from datetime import timezone
+        # Collection time is observation time, never SOURCE/event time. Preserve
+        # the first known collection; legacy payloads remain readable unchanged.
+        observed = datetime.now(timezone.utc).isoformat()
+        stamped = []
+        for item in items:
+            row = self.db.execute('SELECT payload FROM daily_sources WHERE source_id=? AND external_id=?',
+                                  (item.source_id, item.external_id)).fetchone()
+            old = json.loads(row[0]) if row else {}
+            stamped.append(replace(item, source_collected_at=observed,
+                                   first_seen_at=old.get('first_seen_at') or item.first_seen_at or observed,
+                                   last_seen_at=observed))
         with self.db:
             self.db.executemany('INSERT INTO daily_sources(source_id,external_id,payload) VALUES(?,?,?) '
                 'ON CONFLICT(source_id,external_id) DO UPDATE SET payload=excluded.payload',
-                [(i.source_id, i.external_id, json.dumps(asdict(i), ensure_ascii=False, default=str)) for i in items])
+                [(i.source_id, i.external_id, json.dumps(asdict(i), ensure_ascii=False, default=str)) for i in stamped])
 
     def items(self):
         result = []
@@ -103,9 +155,16 @@ class DailyState:
             self.db.execute('INSERT OR REPLACE INTO daily_rewrites VALUES(?,?)',
                             (source_key(story.source), json.dumps(value, ensure_ascii=False)))
 
-    def freeze(self, day, full_body, artifact, stories, items):
-        members = self.members(stories, items)
+    def freeze(self, day, full_body, artifact, stories, items, *, exact_members=False):
+        members = ([(i.source_id, i.external_id) for i in items] if exact_members
+                   else self.members(stories, items))
         with self.db:
+            previous = self.db.execute('SELECT full_body,members FROM daily_editions WHERE day=?',
+                                       (day.isoformat(),)).fetchone()
+            if previous:
+                if previous != (full_body, json.dumps(members)):
+                    raise sqlite3.IntegrityError('Frozen edition cannot be silently replaced')
+                return
             self.db.execute('INSERT INTO daily_editions VALUES(?,?,?,?)',
                             (day.isoformat(), full_body, str(artifact), json.dumps(members)))
 
@@ -116,10 +175,12 @@ class DailyState:
                 if any((i.source_id, i.external_id) == (s.source.source_id, s.source.external_id)
                        or same_event(i, s.source) for s in stories)]
 
-    def mark_included(self, day, stories, items):
+    def mark_included(self, day, stories, items, *, exact_members=False):
         with self.db:
             self.db.executemany('UPDATE daily_sources SET included_day=? WHERE source_id=? AND external_id=?',
-                [(day.isoformat(), *key) for key in self.members(stories, items)])
+                [(day.isoformat(), *key) for key in
+                 ([(i.source_id, i.external_id) for i in items] if exact_members
+                  else self.members(stories, items))])
 
     def delivery_claim(self, day, platform):
         with self.db:

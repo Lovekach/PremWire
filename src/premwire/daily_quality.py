@@ -6,6 +6,67 @@ QUALITY_REVISION = 'daily-quality-20261012-v1'
 PROMO = r'counter[- ]?strike|\bcs\s*2\b|киберспорт|\be[- ]?sports\b|video games|видеоигр|компьютерн\w*\s+игр|giveaway|raffle|розыгрыш|конкурс|FORCE BUY|УЧАСТВУЮ|подписаться|подпишитесь|подписывайтесь|subscribe to|промокод|рекламн\w*\s+интеграц'
 MATCH = r'\b(?:матч\w*|сч[её]т|побед\w*|выиграл\w*|уступил\w*|забил\w*|гол\w*|equalis\w*|lead|beat|score|half|red card)\b'
 
+# Opt-in immutable/shadow checks. Live callers keep the existing revision and
+# behaviour until the owner explicitly approves a route change.
+def semantic_source_issues(text):
+    issues = []
+    if re.search(r'\btouchdowns?\b|тачдаун|\bNFL\b|quarterback|квотербек|американск\w* футбол', text, re.I):
+        issues.append('SPORT_IDENTITY_OTHER_SPORT')
+    if re.search(r'(?:победн\w* гол|winning goal|winner)[^.!?]{0,100}(?:сравн\w* сч[её]т|equalis)|(?:сравн\w* сч[её]т|equalis)[^.!?]{0,100}(?:победн\w* гол|winning goal)', text, re.I):
+        issues.append('MATCH_RESULT_CONTRADICTORY_GOAL_TYPE')
+    if re.search(r'(?:выбрал|решил|намеренно)[^.!?]{0,70}(?:выруб|ударить вратаря|атаковать)|миллион вариантов|knock out the goalkeeper', text, re.I):
+        issues.append('QUOTE_AND_INTENT_UNVERIFIED_VIOLENCE')
+    if re.search(r'фудмолл|еда и напитки|Депо\.Москва|food hall|промокод', text, re.I):
+        issues.append('FINAL_DIGEST_QUALITY_ADVERTORIAL')
+    if re.search(r'эксперт по языку тела|body.language expert', text, re.I):
+        issues.append('QUOTE_AND_INTENT_SPECULATIVE_PERSONAL_STATE')
+    if re.search(r'недвижимост|жилом комплексе|роскошные дома|property purchase|real estate',text,re.I):
+        issues.append('EVENT_RELEVANCE_PRIVATE_LIFESTYLE')
+    if re.search(r'New podcast|новом выпуске|поделился мнением|феноменальном старте',text,re.I) and not re.search(r'\d+[:\-]\d+|официально|назначен',text,re.I):
+        issues.append('EVENT_RELEVANCE_CONTENT_TEASER')
+    if re.search(r'#YoungLions|youth team', text, re.I) and not team_levels(text):
+        issues.append('TEAM_LEVEL_AGE_UNRESOLVED')
+    # Bare transfer headlines are not proof of a completed deal. Do not
+    # manufacture INTEREST either: the supplied evidence has no known stage.
+    if re.fullmatch(r'[^.!?\n]{2,80} переходит в [^.!?\n]{2,50}[.!]?', text.strip(' ❗📝'), re.I):
+        issues.append('TRANSFER_STATUS_UNSPECIFIED')
+    return issues
+
+
+def team_levels(text):
+    return set(re.findall(r'(?i)(?:\b(?:MU|WU|U)[- ]?|до\s*)(\d{2})\b', text))
+
+
+def semantic_relation_issues(source, text):
+    issues = semantic_source_issues(text)
+    if team_levels(source) and team_levels(source) != team_levels(text):
+        issues.append('TEAM_LEVEL_CHANGED_OR_DROPPED')
+    if re.search(r'equalis|сравнял\w* сч[её]т', source, re.I) and re.search(r'победн\w* гол|winning goal|вырвал победу', text, re.I):
+        issues.append('MATCH_RESULT_GOAL_TYPE_CHANGED')
+    if re.search(r'возможн\w* увольн|рискует.{0,25}увольн|could be sacked|at risk of dismissal', source, re.I) and re.search(r'решил уйти|покинул пост|resigned|has left', text, re.I):
+        issues.append('ACTOR_RELATIONS_DISMISSAL_RISK_TO_RESIGNATION')
+    if re.search(r'план|wants|plan will follow|интерес|переговор|reportedly|close to', source, re.I) and re.search(r'официально переш|сделка завершена|будет реализован|officially joined', text, re.I):
+        issues.append('TRANSFER_STATUS_OR_PLAN_CERTAINTY_UPGRADED')
+    # A SOURCE brand is an identifier, not a number to discard/transliterate.
+    for credit in re.findall(r'📰\s*([A-Za-z][A-Za-z0-9._-]+)', source):
+        if credit.casefold() not in text.casefold():
+            issues.append('FACT_PRESERVATION_ATTRIBUTION_CHANGED')
+    if re.search(r'(?:equalis|scores|goal)', source, re.I):
+        before, after = clubs(source), clubs(text)
+        # Unknown club names are not a licence to insert a new scoring actor.
+        # This conservative shadow check supplements, not extends, the alias
+        # table used by live. An unresolved actor is rejected rather than guessed.
+        actor=re.search(r'^(?:«([^»]+)»|([А-ЯЁ][А-Яа-яЁё ]+?))\s+забил',text)
+        unknown=bool(actor and not clubs(actor[1] or actor[2]) and
+                     (actor[1] or actor[2]).casefold() not in source.casefold())
+        if before and (after - before or unknown):
+            issues.append('ACTOR_RELATIONS_UNSUPPORTED_GOAL_CLUB')
+    if re.search(r'#?Lionesses|женск\w* сборн',source,re.I) and not re.search(r'женск|Lionesses',text,re.I):
+        issues.append('CLUB_MEMBERSHIP_WOMENS_TEAM_DROPPED')
+    if re.search(r'180 и более касаний|180\+ touches',source,re.I) and not re.search(r'180',text):
+        issues.append('STAT_METRIC_AND_UNIT_TOUCH_THRESHOLD_DROPPED')
+    return sorted(set(issues))
+
 def clubs(text):
     found = set()
     for entry in club_entries():

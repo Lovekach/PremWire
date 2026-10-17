@@ -17,7 +17,11 @@ import truststore
 
 
 class TelegramApiError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, rejected: bool = False,
+                 retry_after: int | None = None) -> None:
+        super().__init__(message)
+        self.rejected = rejected
+        self.retry_after = retry_after
 
 
 def unicode_transport_roundtrip(text: str) -> bool:
@@ -98,9 +102,23 @@ class TelegramBotApi:
             ) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
-            # Do not parse or echo an error body that may contain credentials.
+            # Extract only delivery metadata. Never echo bodies/descriptions,
+            # request URLs, network reasons or chained credential-bearing errors.
+            error_payload = {}
+            try:
+                error_payload = json.loads(exc.read().decode('utf-8'))
+            except (OSError, ValueError):
+                pass
+            if not isinstance(error_payload, dict):
+                error_payload = {}
+            parameters = error_payload.get('parameters', {})
+            if not isinstance(parameters, dict):
+                parameters = {}
             raise TelegramApiError(
-                f"Telegram API returned HTTP {exc.code} for {method}"
+                f"Telegram API returned HTTP {exc.code} for {method}",
+                rejected=(error_payload.get('ok') is False and
+                          error_payload.get('error_code') == exc.code and 400 <= exc.code < 500),
+                retry_after=parameters.get('retry_after') if exc.code == 429 else None,
             ) from None
         except URLError as exc:
             raise TelegramApiError(
@@ -111,7 +129,13 @@ class TelegramBotApi:
                 f"Telegram API returned invalid JSON for {method}"
             ) from None
         if not payload.get("ok"):
-            raise TelegramApiError(f"{method} failed: API rejected request")
+            code = payload.get('error_code')
+            parameters = payload.get('parameters', {})
+            if not isinstance(parameters, dict):
+                parameters = {}
+            raise TelegramApiError(f"{method} failed: API rejected request",
+                rejected=(payload.get('ok') is False and type(code) is int and 400 <= code < 500),
+                retry_after=parameters.get('retry_after') if code == 429 else None)
         return payload.get("result")
 
     def verify_channel(self, channel: str) -> BotVerification:

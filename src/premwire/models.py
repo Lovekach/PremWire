@@ -64,6 +64,9 @@ class IncomingItem:
     canonical_url: str
     published_at: datetime
     media_url: str | None = None
+    source_collected_at: str = ''
+    first_seen_at: str = ''
+    last_seen_at: str = ''
 
     def __post_init__(self) -> None:
         if not self.source_id.strip():
@@ -73,6 +76,13 @@ class IncomingItem:
         if not self.text.strip():
             raise ValueError("text is required")
         object.__setattr__(self, "published_at", as_utc(self.published_at))
+        for key in ('source_collected_at', 'first_seen_at', 'last_seen_at'):
+            value = getattr(self, key)
+            if value:
+                stamp = datetime.fromisoformat(value)
+                if stamp.tzinfo is None:
+                    raise ValueError('Aware collection timestamp required')
+                object.__setattr__(self, key, stamp.astimezone(timezone.utc).isoformat())
         media_url = (self.media_url or "").strip()
         object.__setattr__(self, "media_url", media_url or None)
 

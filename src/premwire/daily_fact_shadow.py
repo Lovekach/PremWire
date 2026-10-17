@@ -51,7 +51,11 @@ class FactBundle:
 
 def normalize_handles(text):
     # Explicit public club handle, not a guess from a blue emoji/account author.
-    return re.sub(r'@ManCity\b', 'Manchester City', text, flags=re.I)
+    for handle, name in (('ManCity','Manchester City'), ('HullCity','Hull City'),
+                         ('ManUtd','Manchester United'), ('NUFC','Newcastle United')):
+        text=re.sub(r'(?<!\w)@'+handle+r'\b', name, text, flags=re.I)
+    # Preserve the category; YoungLions alone does NOT establish a U21 age.
+    return re.sub(r'#YoungLions\b','England youth team',text,flags=re.I)
 
 
 def clauses(text):
@@ -103,13 +107,27 @@ def equivalent(a, b):
 
 def prepare(items, start, end, filter_config, timings=None):
     ticks=time.monotonic()
-    normalized = [replace(i, text=normalize_handles(i.text)) for i in items]
+    from .config import FilterConfig
+    filter_config=filter_config or FilterConfig(True,())
+    from .daily_quality import semantic_source_issues
+    from .simple_editorial import clean_simple_source_text
+    normalized=[]; semantic_rejects=[]
+    for item in items:
+        raw=normalize_handles(item.text.replace('\\n','\n'))
+        # Evaluate original text before the legacy cleaner discards metadata.
+        issues=semantic_source_issues(raw)
+        clean=clean_simple_source_text(raw)
+        issues+=semantic_source_issues(clean)
+        if issues:
+            semantic_rejects.append(dict(url=item.canonical_url,reason=sorted(set(issues)),stage='IMMUTABLE_SOURCE_GATE'))
+        else:
+            normalized.append(replace(item,text=raw))
     accepted, rejected = filter_items(normalized, start, end, filter_config=filter_config)
     recovered = []
     # Rescue only the known narrow legacy failures, not ads or arbitrary rejects.
     allowed_reasons = {'SKIP_NON_FOOTBALL', 'caption_without_news_action',
                        'EXPIRED_TRANSIENT_STORY', 'FOOTBALL_RELEVANCE_FAN_FILLER',
-                       'insufficient_source_text'}
+                       'insufficient_source_text', 'DAILY_ROUTINE_QUOTE_WITHOUT_NEW_EVENT'}
     by_url = {i.canonical_url: i for i in normalized}
     context_only = []
     for refusal in rejected:
@@ -127,8 +145,16 @@ def prepare(items, start, end, filter_config, timings=None):
         if AdvertisementFilter(filter_config).check(clean).blocked or (issues and not (single_club_score and issues==['CONTEXT_COMPLETENESS_MATCH'])):
             continue
         concrete = (len(clubs(clean)) >= 2 and bool(re.search(r'goal|score|victory|lead|beat|\d\s*[-:]\s*\d|гол|побед', clean, re.I)))
+        from .daily_fact_patterns import editorial_relations
+        # Narrow, fully typed relation rescue; advertisements and semantic gates
+        # above are unchanged. No recognition by particular player/club names.
+        structured=editorial_relations(item.text,clean,item.canonical_url,lambda *args:None,lambda text:text)
+        if refusal['reason']=='DAILY_ROUTINE_QUOTE_WITHOUT_NEW_EVENT' and not structured:
+            continue  # A colon followed by a quoted CLUB is not a routine quote;
+                      # only an explicit typed event can recover this refusal.
         appointment = bool(re.search(r'becomes new head coach at\s+\w+', clean, re.I))
-        if not (concrete or appointment or single_club_score):
+        contract=bool(re.search(r'have reached an agreement with .+? over new long term deal until June \d{4}',clean))
+        if not (concrete or appointment or single_club_score or contract or structured):
             continue
         candidate = replace(item, text=clean)
         if refusal['reason'] == 'EXPIRED_TRANSIENT_STORY' or single_club_score:
@@ -150,6 +176,7 @@ def prepare(items, start, end, filter_config, timings=None):
         else:
             groups.append([item])
     winners, conflicts = [], []
+    original_members = {}
     for group in groups:
         if not pairs(group[0].text):
             resolved, errors = collapse(group)
@@ -158,6 +185,7 @@ def prepare(items, start, end, filter_config, timings=None):
                 winner = resolved[0]
                 # Preserve the established transfer-stage/terms consolidation.
                 winners.append((winner,[winner]))
+                original_members[winner.canonical_url] = tuple(i.canonical_url for i in group)
             continue
         finals = [i for i in group if final_result(i.text)]
         scores = {m[0].replace('-', ':').replace(' ', '') for i in finals
@@ -199,7 +227,8 @@ def prepare(items, start, end, filter_config, timings=None):
         source = replace(winner, text='\n'.join(f.text for f in facts))
         identity = '|'.join(sorted(next(iter(pair)))) if len(pair) == 1 else winner.canonical_url
         bundles.append(FactBundle(identity, tuple(sorted(clubs(winner.text))), source,
-                                  tuple(facts), tuple(dict.fromkeys(i.canonical_url for i in members))))
+                                  tuple(facts), tuple(dict.fromkeys(
+                                      [i.canonical_url for i in members] + list(original_members.get(winner.canonical_url, ()))))))
     # Short club streak captions may supplement a uniquely identified result,
     # but never infer a fixture from an unnamed club/emoji.
     consumed = set()
@@ -219,7 +248,7 @@ def prepare(items, start, end, filter_config, timings=None):
                     consumed.add(other.identity)
     bundles = [b for b in bundles if b.identity not in consumed]
     if timings is not None:timings['source_context_dedupe']=time.monotonic()-ticks
-    return bundles, rejected, recovered, conflicts
+    return bundles, rejected+semantic_rejects, recovered, conflicts
 
 
 def coverage_issues(bundle, text):

@@ -169,16 +169,20 @@ class XFreeRssCollector:
         self,
         sources: tuple[Source, ...],
         mirrors: tuple[str, ...] = DEFAULT_X_RSS_MIRRORS,
+        *, deadline: float | None = None,
     ) -> None:
         self.sources = tuple(
             source for source in sources if source.platform == "x" and source.enabled
         )
         self.mirrors = tuple(mirrors)
+        self.deadline = deadline
 
     def _feed(self, source: Source) -> tuple[IncomingItem, ...]:
         errors: list[str] = []
         handle = quote(source.handle, safe="")
         for template in self.mirrors:
+            if self.deadline is not None and time.monotonic() >= self.deadline:
+                raise CollectorError('RSS collection budget expired')
             url = template.format(handle=handle)
             retry_after = _feed_retry_after(url)
             if retry_after > 0:
@@ -190,7 +194,7 @@ class XFreeRssCollector:
                     headers={
                         "Accept": "application/rss+xml, application/xml, text/xml, */*"
                     },
-                    timeout=8,
+                    timeout=8 if self.deadline is None else min(8,max(.1,self.deadline-time.monotonic())),
                 )
                 parsed = parse_x_rss(payload, source)
                 if not parsed:
