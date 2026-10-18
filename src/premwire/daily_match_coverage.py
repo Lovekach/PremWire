@@ -4,7 +4,7 @@ No network, sender, credentials or registry gate. A missing licensed calendar
 means UNKNOWN, not zero fixtures and not a reason to suppress safe other news.
 Only a transport-confirmed complete competition snapshot may prove a denominator.
 """
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import re
 
 P0=('PREMIER_LEAGUE','CHAMPIONS_LEAGUE','EUROPA_LEAGUE')
@@ -53,8 +53,8 @@ def assess_match_coverage(inputs, selected, audit, cutoff, *, calendar=None):
     """calendar: immutable observed snapshot, not an assumed league schedule.
 
     Normalized fixture rows follow daily_match_data.normalize_fixture. An
-    explicit `bundle_ids` mapping is optional, and only exact API binding or
-    an already-verified fixture_id fact can associate a result. Unknown dates
+    Only exact API binding or an already-verified fixture identity can associate
+    a result. Unknown dates
     and informal team-name guesses cannot count as successful coverage.
     """
     gaps=source_gaps(inputs,selected,audit)
@@ -97,7 +97,7 @@ def assess_match_coverage(inputs, selected, audit, cutoff, *, calendar=None):
         seen[key]=row
         competition=COMPETITIONS.get(row.get('competition'))
         if competition not in requested:invalid=True;continue
-        if kickoff<midnight:continue  # not part of today's calendar denominator
+        if not midnight<=kickoff<midnight+timedelta(days=1):continue  # today's Moscow calendar only
         # A fixture starting after cutoff cannot already be final at cutoff.
         status=row.get('status')
         if status not in ('FULL_TIME','LIVE','HALF_TIME','SCHEDULED','POSTPONED','CANCELLED'):
@@ -122,7 +122,9 @@ def assess_match_coverage(inputs, selected, audit, cutoff, *, calendar=None):
                 from .daily_match_data import bind_fixture
                 bound,_=bind_fixture(b,[row])
                 if bound:included=True;break
-        reason=('INCLUDED' if included else 'NOT_COLLECTED' if confirmed else
+        editorial_refs={url for d in audit.get('editorial_v2',()) if d.get('decision')=='EXCLUDE' for url in d.get('sources',())}
+        excluded=confirmed and row.get('source') in editorial_refs
+        reason=('INCLUDED' if included else 'EDITORIALLY_EXCLUDED' if excluded else 'NOT_COLLECTED' if confirmed else
                 'SCHEDULED_AFTER_CUTOFF' if kickoff>=cutoff else 'UNVERIFIED')
         rows.append(dict(fixture_id=key,competition=row.get('competition'),status=status,
                          confirmed=confirmed,included=included,reason=reason,source=row.get('source')))
@@ -138,6 +140,7 @@ def assess_match_coverage(inputs, selected, audit, cutoff, *, calendar=None):
                   finished_before_cutoff=len(finals) if scope_complete else None,
                   confirmed_results=len(finals),included_results=len(finals)-len(missing),missing_results=len(missing),
                   confirmed_results_are_lower_bound=not scope_complete,fixtures=rows)
-    if len(finals)>=2 and len(missing)==len(finals):
+    result['editorially_excluded_results']=sum(r['reason']=='EDITORIALLY_EXCLUDED' for r in rows)
+    if len(finals)>=2 and len(missing)==len(finals) and any(r['reason']!='EDITORIALLY_EXCLUDED' for r in missing):
         result.update(status='COVERAGE_CRITICAL',reason='CONFIRMED_SIGNIFICANT_FINALS_ABSENT')
     return result

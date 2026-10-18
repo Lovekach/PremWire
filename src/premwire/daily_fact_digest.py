@@ -81,11 +81,15 @@ class ImmutableBundle:
     freshness_confidence: str = 'UNKNOWN'
     freshness_category: str = 'DATE_UNKNOWN'
     match_status: str = ''
+    editorial_mode: str = ''
 
     def render(self, variant=0):
         if type(variant) is not int or variant not in (0, 1):
             raise ValueError('Unsupported editorial variant')
-        return ' '.join(draft_parts(self,variant).values())
+        if self.editorial_mode=='v2':
+            from .editorial_v2 import parts
+            return ' '.join(part for part in parts(self,variant).values() if part)
+        return ' '.join(part for part in draft_parts(self,variant).values() if part)
 
 
 def draft_parts(bundle,variant):
@@ -911,10 +915,15 @@ def audit_digest(body, selected, choices, sources=()):
         if type(variant) is not int or variant not in (0,1):
             distorted.append(b.event_id);variant=0
         if b.render(variant) not in body:distorted.append(b.event_id)
+        presentation=draft_parts(b,variant)
+        if b.editorial_mode=='v2':
+            from .editorial_v2 import parts,validate
+            presentation=parts(b,variant)
+            if validate(b,b.render(variant),variant):distorted.append(b.event_id)
         facts={f.key:f for f in b.verified_facts}
         for key in b.essential_facts:
             fact=facts.get(key)
-            if fact is None or draft_parts(b,variant)[key] not in body:
+            if fact is None or presentation[key] not in body:
                 missing.append((b.event_id,key))
         for fact in b.verified_facts:
             if not fact.source_refs or not fact.evidence or (sources and not any(
@@ -1004,7 +1013,9 @@ def render(bundles,day,choices=None,limit=3900):
         for section in sections:
             texts=['• '+b.render(choices.get(b.event_id,0)) for b in entries if display_section(b)==section]
             if texts: parts.append(section+'\n\n'+'\n\n'.join(texts))
-        return '\n\n'.join(parts+['@PremWire'])
+        attribution=['Football data provided by the Football-Data.org API'] if any(
+            any(f.key=='fixture_identity' and f.values[0]=='football-data.org' for f in b.verified_facts) for b in entries) else []
+        return '\n\n'.join(parts+attribution+['@PremWire'])
     for b in bundles:
         if b.event_id in {s.event_id for s in selected}:continue
         if telegram_length(compose(selected+[b]))<=min(limit,4096):selected.append(b)

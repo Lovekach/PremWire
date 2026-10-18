@@ -82,8 +82,12 @@ class NewSourceShapes(unittest.TestCase):
         start=datetime(2026,10,13,20,56,tzinfo=MOSCOW);end=start+timedelta(hours=12)
         with patch('premwire.daily_fact_e2e.build_bundles',return_value=([b],{})):
             result=prepare_immutable_edition(inputs,start,end,None,edition_day=date(2026,10,14))
-        self.assertIn('14 ОКТЯБРЯ',result['body']);self.assertIn('13 октября',result['body'])
-        self.assertNotIn('сегодня',result['body']);self.assertIn('Pablo Example',result['body'])
+        # Date anchoring is independent of editorial newsworthiness: a bare
+        # yesterday-only availability update may legitimately be omitted.
+        anchored=result['audit']['pre_editorial_gate_bundles'][0]
+        text=' '.join(f['formulations'][0] for f in anchored['verified_facts'])
+        self.assertIn('13 октября',text);self.assertNotIn('сегодня',text)
+        self.assertIn('Pablo Example',text)
 
     def test_expired_rss_budget_makes_no_request(self):
         s=Source('x','x','Example','example','https://x.com/example')

@@ -122,7 +122,20 @@ def bind_fixture(bundle, fixtures):
         return next(iter(matches)) if len(matches)==1 else value
     teams={name(v) for v in bundle.participants[:2]}
     competition=next((f.values[0] for f in bundle.verified_facts if f.key=='competition'),'')
-    competitions={'CHAMPIONS_LEAGUE':'UEFA Champions League','EUROPA_LEAGUE':'UEFA Europa League','PREMIER_LEAGUE':'Premier League'}
+    competitions={'CHAMPIONS_LEAGUE':'UEFA Champions League','EUROPA_LEAGUE':'UEFA Europa League','PREMIER_LEAGUE':'Premier League',
+                  'LA_LIGA':'La Liga','SERIE_A':'Serie A','BUNDESLIGA':'Bundesliga','LIGUE_1':'Ligue 1'}
+    typed=next((f.values for f in bundle.verified_facts if f.key=='fixture_identity'),None)
+    if typed:
+        matches=[f for f in fixtures if f.get('provider')==typed[0] and str(f['fixture_id'])==typed[1]
+                 and str(f['home_id'])==typed[2] and str(f['away_id'])==typed[3] and f['kickoff_at']==typed[4]]
+        if len(matches)!=1:return None,'MATCH_IDENTITY_OR_DATE_NOT_UNIQUE'
+        match=matches[0]
+        if match['status']!='FULL_TIME':return None,'MATCH_NOT_FINAL'
+        result=next((f.values for f in bundle.verified_facts if f.key in ('result','draw_result')),None)
+        if not result:return None,'SOURCE_RESULT_MISSING'
+        score=match['score']
+        expected=f'{max(score)}:{min(score)}'
+        return (match,'PROVIDER_SOURCE_CONSISTENT_NOT_INDEPENDENT') if result[2]==expected else (None,'MATCH_SOURCE_API_CONFLICT')
     matches=[f for f in fixtures if {name(f['home']),name(f['away'])}==teams
              and bundle.event_date and f['event_date']==bundle.event_date
              and competition in competitions and f['competition']==competitions[competition]]

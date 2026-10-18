@@ -123,7 +123,14 @@ def prepare_immutable_edition(inputs,start,end,filters,*,history=(),style_chat=N
     Optional style_chat is responsible for a <=12s transport timeout; no retry.
     """
     ticks=time.monotonic();phases={};day=edition_day or start.astimezone(MOSCOW).date()
-    bundles,audit=build_bundles(inputs,start,end,filters,phases,history)
+    from .football_data import SOURCE_ID, compile_sources, merge_results
+    typed_sources=[i for i in inputs if i.source_id==SOURCE_ID]
+    bundles,audit=build_bundles([i for i in inputs if i.source_id!=SOURCE_ID],start,end,filters,phases,history)
+    typed,typed_checks=compile_sources(typed_sources,end)
+    bundles+=typed
+    audit['provider_sources']=typed_checks
+    from .editorial_source_context import enrich
+    bundles=enrich(bundles,inputs,audit)
     originals={i.canonical_url:i for i in inputs}
     anchored=[]
     for b in bundles:
@@ -141,6 +148,8 @@ def prepare_immutable_edition(inputs,start,end,filters,*,history=(),style_chat=N
     from .daily_fact_digest import editorial_freshness
     bundles,freshness=editorial_freshness(anchored,inputs,day)
     audit['editorial_freshness']=freshness
+    bundles,fixture_checks=merge_results(bundles,history)
+    audit['fixture_dedupe']=fixture_checks
     from .daily_fact_digest import merge_halftime_context
     bundles=merge_halftime_context(bundles)
     from .daily_fact_digest import merge_editorial_context
@@ -152,6 +161,9 @@ def prepare_immutable_edition(inputs,start,end,filters,*,history=(),style_chat=N
     from .daily_fact_digest import final_digest_gate
     bundles,context_checks=final_digest_gate(bundles,history)
     audit.setdefault('final_digest_gate',[]).extend(context_checks)
+    # Context merger rebuilds essential slots; identity is internal provenance,
+    # not a printed factual obligation and must not inflate retention metrics.
+    bundles=[replace(b,essential_facts=tuple(k for k in b.essential_facts if k!='fixture_identity')) for b in bundles]
     from .daily_editorial_gates import freshness_gate, statistics_gate, editorial_rank
     audit['pre_editorial_gate_bundles']=[asdict(b) for b in bundles]
     from .daily_match_data import match_context_gate
@@ -171,6 +183,14 @@ def prepare_immutable_edition(inputs,start,end,filters,*,history=(),style_chat=N
     bundles,checks=editorial_rank(bundles)
     audit['editorial_ranking']=checks
     phases['editorial_ranking']=time.monotonic()-timer
+    from .editorial_v2 import select,fingerprint
+    timer=time.monotonic()
+    before={b.event_id:fingerprint(b) for b in bundles}
+    bundles,editorial_decisions=select(bundles,day)
+    if any(fingerprint(b)!=before[b.event_id] for b in bundles):
+        raise ValueError('Editorial layer changed frozen facts')
+    audit['editorial_v2']=editorial_decisions
+    phases['editorial_v2']=time.monotonic()-timer
     covered={u for b in bundles for u in b.source_refs}
     audit['context_covered']=[dict(e,handling='SOURCE_USED_AS_VALIDATED_CONTEXT') for e in audit.get('unsupported',[]) if set(e.get('sources',())).issubset(covered)]
     audit['unsupported']=[e for e in audit.get('unsupported',[]) if not set(e.get('sources',())).issubset(covered)]

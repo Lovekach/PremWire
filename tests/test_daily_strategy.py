@@ -185,6 +185,7 @@ class DailyStrategyTests(unittest.TestCase):
         with patch('premwire.daily_text_digest.load_config',return_value=config), \
              patch('premwire.daily_text_digest.load_env',return_value={}), \
              patch('premwire.daily_text_digest.collect_day',side_effect=collect), \
+             patch('premwire.football_data.collect_optional',side_effect=lambda cache,start,end:([],None,end)), \
              patch('premwire.daily_text_digest.TelegramBotApi',side_effect=AssertionError('No send')), \
              patch('premwire.daily_text_digest.BatchOllama',side_effect=AssertionError('No LLM')), \
              contextlib.redirect_stdout(io.StringIO()):

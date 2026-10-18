@@ -723,7 +723,7 @@ class BatchOllama:
                 self.process.wait(timeout=10)
 
 
-DAILY_PIPELINE_REVISION = "immutable-production-20261017-v2"
+DAILY_PIPELINE_REVISION = "editorial-production-20261018-v2"
 
 
 def empty_edition_reason(items, warnings, audit):
@@ -887,6 +887,8 @@ def run_daily(root: Path, *, confirm=False, cached=False, shadow_date=None, shad
             # Retain late unprinted news, but never backfill arbitrarily old days.
             start = max(cutoff, start - timedelta(days=2))
         coverage = []
+        match_calendar = None
+        fixture_evidence = ()
         fresh_count = 0
         if cached or shadow_input:
             if shadow_input:
@@ -906,6 +908,15 @@ def run_daily(root: Path, *, confirm=False, cached=False, shadow_date=None, shad
             phase = 'COLLECTION_AND_INGESTION'
             items, warnings = collect_day(config.sources, env, start, end, budget_seconds=90,
                                           coverage=coverage, bounded=True)
+            from .football_data import collect_optional
+            match_items, match_calendar, refreshed_cutoff = collect_optional(root/'data/football-data-cache', start, end)
+            # Only the finite final refresh may advance the collection cutoff.
+            # Never backdate a newly received final score to the 20:56 start.
+            if match_calendar is not None:
+                end = refreshed_cutoff
+                fixture_evidence = match_calendar['fixtures']
+                warnings.extend('MATCH_SOURCE: '+entry['reason'] for entry in match_calendar['errors'])
+            items += match_items
             fresh_count = len(items)
             state.accumulate(items)
             items = accumulated_items(state, config, start, end)
@@ -917,7 +928,8 @@ def run_daily(root: Path, *, confirm=False, cached=False, shadow_date=None, shad
         removed = [{"url": item.canonical_url, "reason": "SOURCE_SUPPRESSED"} for item in items if item not in usable]
         phase = 'FACT_BUNDLE_AND_FINAL_GATE'
         immutable = prepare_immutable_edition(usable, start, end, config.filters, history=history,
-                                              edition_day=day)  # style_chat deliberately absent
+                                              edition_day=day, fixture_evidence=fixture_evidence,
+                                              match_calendar=match_calendar)  # style_chat deliberately absent
         # Recheck deletions/owner controls immediately before freezing.
         latest = suppression_texts(config)
         remaining = [item for item in usable if not any(suppression_matches(item, old) for old in latest)]
@@ -925,7 +937,8 @@ def run_daily(root: Path, *, confirm=False, cached=False, shadow_date=None, shad
             removed.extend({"url": item.canonical_url, "reason": "SUPPRESSED_DURING_PREPARATION"}
                            for item in usable if item not in remaining)
             usable = remaining
-            immutable = prepare_immutable_edition(usable, start, end, config.filters, history=history, edition_day=day)
+            immutable = prepare_immutable_edition(usable, start, end, config.filters, history=history, edition_day=day,
+                                                  fixture_evidence=fixture_evidence,match_calendar=match_calendar)
         health["phases_seconds"].update({key: round(value, 3) for key, value in immutable["phases"].items()})
         bridge = publication_adapter(immutable, usable, config.publishing.channel)
         body, stories = bridge["body"], bridge["stories"]
