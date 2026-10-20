@@ -71,10 +71,10 @@ def collect_shadow(config,env,start,end,state,collect,budget=110):
         fallback_urls=[i.canonical_url for i in fallbacks])
 
 
-def select_for_telegram(bundles,day):
+def select_for_telegram(bundles,day,*,channel_credit_verified=False):
     # Reserve the longer code-generated variant BEFORE the model call.
     longest={b.event_id:int(len(b.render(1).encode('utf-16-le'))>len(b.render(0).encode('utf-16-le'))) for b in bundles}
-    _,selected=render(bundles,day,longest)
+    _,selected=render(bundles,day,longest,channel_credit_verified=channel_credit_verified)
     return selected
 
 
@@ -112,10 +112,11 @@ def quality_issues(body,bundles):
     if any(b.event_type=='PLAYER_STATS' and b.section!=STATS_SECTION for b in bundles):issues.append('PLAYER_STATS_CATEGORY')
     if len(bundles)!=len({b.event_id for b in bundles}):issues.append('DUPLICATE_EVENT')
     if telegram_length(body)>3900:issues.append('DIGEST_LIMIT')
+    if any(b.editorial_mode!='v2' for b in bundles):issues.append('EDITORIAL_V2_REQUIRED')
     return issues
 
 
-def prepare_immutable_edition(inputs,start,end,filters,*,history=(),style_chat=None,edition_day=None,fixture_evidence=(),match_calendar=None):
+def prepare_immutable_edition(inputs,start,end,filters,*,history=(),style_chat=None,edition_day=None,fixture_evidence=(),match_calendar=None,channel_credit_verified=False):
     """One reusable preparation route; no sender, env, model startup or live IO.
 
     The daily entry calls this preparation block. Collection, lock, ledger,
@@ -194,8 +195,8 @@ def prepare_immutable_edition(inputs,start,end,filters,*,history=(),style_chat=N
     covered={u for b in bundles for u in b.source_refs}
     audit['context_covered']=[dict(e,handling='SOURCE_USED_AS_VALIDATED_CONTEXT') for e in audit.get('unsupported',[]) if set(e.get('sources',())).issubset(covered)]
     audit['unsupported']=[e for e in audit.get('unsupported',[]) if not set(e.get('sources',())).issubset(covered)]
-    timer=time.monotonic();selected=select_for_telegram(bundles,day)
-    base,_=render(selected,day)
+    timer=time.monotonic();selected=select_for_telegram(bundles,day,channel_credit_verified=channel_credit_verified)
+    base,_=render(selected,day,channel_credit_verified=channel_credit_verified)
     phases['selection_and_deterministic_draft']=time.monotonic()-timer
     frozen=json.dumps([asdict(b) for b in selected],ensure_ascii=False,sort_keys=True)
     choices={b.event_id:0 for b in selected};trace=[]
@@ -208,7 +209,7 @@ def prepare_immutable_edition(inputs,start,end,filters,*,history=(),style_chat=N
             choices.update(edited)
             # The callback can attach measured token/load metrics, not secrets.
     phases['optional_style']=time.monotonic()-timer
-    timer=time.monotonic();body,final=render(selected,day,choices)
+    timer=time.monotonic();body,final=render(selected,day,choices,channel_credit_verified=channel_credit_verified)
     checked=audit_digest(body,final,choices,inputs);quality=quality_issues(body,final)
     if checked['essential_facts_lost'] or checked['distorted_events'] or checked['provenance_issues'] or quality:
         raise ValueError('Immutable final validation failed')
@@ -220,7 +221,10 @@ def prepare_immutable_edition(inputs,start,end,filters,*,history=(),style_chat=N
     timer=time.monotonic()
     audit['match_coverage']=assess_match_coverage(inputs,final,audit,end,calendar=match_calendar)
     phases['match_coverage']=time.monotonic()-timer
-    return dict(body=body,selected=final,bundles=bundles,audit=audit,payload=payload,
+    from .daily_footer import attribution_metadata
+    attribution=attribution_metadata(uses_provider=any(any(f.key=='fixture_identity' and f.values[0]=='football-data.org'
+        for f in b.verified_facts) for b in final),channel_verified=channel_credit_verified)
+    return dict(body=body,selected=final,bundles=bundles,audit=audit,payload=payload,attribution=attribution,
                 choices=choices,trace=trace,phases=phases,elapsed_seconds=time.monotonic()-ticks,
                 quality_issues=quality,**checked)
 

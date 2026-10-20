@@ -995,7 +995,7 @@ def edit_batches(bundles,chat,deadline,monotonic,max_calls=1):
     return choices,trace
 
 
-def render(bundles,day,choices=None,limit=3900):
+def render(bundles,day,choices=None,limit=3900,*,channel_credit_verified=False):
     choices=choices or {};selected=[]
     def compose(entries):
         parts=[f'⚽ ГЛАВНОЕ ЗА ДЕНЬ | {day.day} {MONTHS[day.month-1].upper()}']
@@ -1013,9 +1013,10 @@ def render(bundles,day,choices=None,limit=3900):
         for section in sections:
             texts=['• '+b.render(choices.get(b.event_id,0)) for b in entries if display_section(b)==section]
             if texts: parts.append(section+'\n\n'+'\n\n'.join(texts))
-        attribution=['Football data provided by the Football-Data.org API'] if any(
-            any(f.key=='fixture_identity' and f.values[0]=='football-data.org' for f in b.verified_facts) for b in entries) else []
-        return '\n\n'.join(parts+attribution+['@PremWire'])
+        from .daily_footer import compose
+        uses_provider=any(any(f.key=='fixture_identity' and f.values[0]=='football-data.org'
+                              for f in b.verified_facts) for b in entries)
+        return compose(parts,uses_provider=uses_provider,channel_verified=channel_credit_verified)
     for b in bundles:
         if b.event_id in {s.event_id for s in selected}:continue
         if telegram_length(compose(selected+[b]))<=min(limit,4096):selected.append(b)

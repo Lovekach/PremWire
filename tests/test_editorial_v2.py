@@ -18,6 +18,43 @@ def bundle(home=5,away=0,previous=False):
     return replace(b,freshness_category='RECENT_UNPUBLISHED' if previous else 'FRESH_TODAY')
 
 class EditorialTests(unittest.TestCase):
+    def test_footer_credit_requires_exact_channel_about_line(self):
+        from premwire.daily_footer import CREDIT,channel_credit_verified
+        chat=dict(type='channel',username='PremWire',description='Original description\n\n'+CREDIT)
+        self.assertTrue(channel_credit_verified(chat,'@PremWire'))
+        self.assertFalse(channel_credit_verified(chat,'@other'))
+        self.assertFalse(channel_credit_verified(dict(chat,description='Removed'),'@PremWire'))
+        self.assertFalse(channel_credit_verified(dict(chat,description='Do not show '+CREDIT),'@PremWire'))
+        self.assertFalse(channel_credit_verified(None,'@PremWire'))
+
+    def test_footer_fail_closed_and_no_duplicate_or_dash(self):
+        from premwire.daily_footer import CREDIT,compose
+        self.assertEqual(compose(['Header',CREDIT+' -','@PremWire','-'],uses_provider=True),
+                         'Header\n\n'+CREDIT+'\n\n@PremWire')
+        self.assertEqual(compose(['Header',CREDIT,'@PremWire'],uses_provider=True,channel_verified=True),
+                         'Header\n\n@PremWire')
+
+    def test_footer_placement_does_not_change_facts(self):
+        from premwire.daily_fact_digest import render
+        from premwire.daily_fact_e2e import prepare_payload
+        from premwire.daily_footer import CREDIT
+        b=replace(bundle(),editorial_mode='v2');before=fingerprint(b)
+        inline,one=render([b],END.date())
+        clean,two=render([b],END.date(),channel_credit_verified=True)
+        self.assertEqual(one,two);self.assertEqual(fingerprint(b),before)
+        self.assertEqual(clean,inline.replace(CREDIT+'\n\n',''))
+        self.assertIn(b.render(),clean);self.assertTrue(clean.endswith('\n\n@PremWire'))
+        self.assertNotIn(CREDIT,prepare_payload('@shadow',clean)['text'])
+
+    def test_legacy_renderer_cannot_pass_new_preparation(self):
+        from unittest.mock import patch
+        from premwire.daily_fact_e2e import prepare_immutable_edition
+        r=raw();r['score']['fullTime']=dict(home=5,away=0);r['score']['winner']='HOME_TEAM'
+        item=source_item(r,OBS)
+        with patch('premwire.editorial_v2.select',side_effect=lambda bs,day:(bs,[])):
+            with self.assertRaisesRegex(ValueError,'Immutable final validation failed'):
+                prepare_immutable_edition([item],END.replace(hour=0,minute=0),END,None)
+
     def test_provider_id_and_name_both_required(self):
         self.assertEqual(team_name(dict(id=397,name='Brighton & Hove Albion FC')),'Брайтон')
         self.assertEqual(team_name(dict(id=397,name='Other Brighton')),'Other Brighton')

@@ -723,7 +723,7 @@ class BatchOllama:
                 self.process.wait(timeout=10)
 
 
-DAILY_PIPELINE_REVISION = "editorial-production-20261018-v2"
+DAILY_PIPELINE_REVISION = "editorial-production-20261020-v2-footer"
 
 
 def empty_edition_reason(items, warnings, audit):
@@ -926,10 +926,22 @@ def run_daily(root: Path, *, confirm=False, cached=False, shadow_date=None, shad
         suppressed = suppression_texts(config)
         usable = [item for item in items if not any(suppression_matches(item, old) for old in suppressed)]
         removed = [{"url": item.canonical_url, "reason": "SOURCE_SUPPRESSED"} for item in items if item not in usable]
+        # A visible channel About credit is allowed by provider T&C 7.1. Verify
+        # freshly, not via a local switch that could outlive the public credit.
+        channel_credit = False
+        if any(item.source_id == 'football_data_matches' for item in usable) and env.get('TELEGRAM_BOT_TOKEN'):
+            from .daily_footer import channel_credit_verified
+            try:
+                info = TelegramBotApi(env['TELEGRAM_BOT_TOKEN'], timeout=5).call(
+                    'getChat', chat_id=config.publishing.channel)
+                channel_credit = channel_credit_verified(info, config.publishing.channel)
+            except Exception as error:
+                # Type-only diagnostics, never credentials or remote error text.
+                health['attribution_check_failure'] = type(error).__name__
         phase = 'FACT_BUNDLE_AND_FINAL_GATE'
         immutable = prepare_immutable_edition(usable, start, end, config.filters, history=history,
                                               edition_day=day, fixture_evidence=fixture_evidence,
-                                              match_calendar=match_calendar)  # style_chat deliberately absent
+                                              match_calendar=match_calendar,channel_credit_verified=channel_credit)  # style_chat deliberately absent
         # Recheck deletions/owner controls immediately before freezing.
         latest = suppression_texts(config)
         remaining = [item for item in usable if not any(suppression_matches(item, old) for old in latest)]
@@ -938,7 +950,7 @@ def run_daily(root: Path, *, confirm=False, cached=False, shadow_date=None, shad
                            for item in usable if item not in remaining)
             usable = remaining
             immutable = prepare_immutable_edition(usable, start, end, config.filters, history=history, edition_day=day,
-                                                  fixture_evidence=fixture_evidence,match_calendar=match_calendar)
+                                                  fixture_evidence=fixture_evidence,match_calendar=match_calendar,channel_credit_verified=channel_credit)
         health["phases_seconds"].update({key: round(value, 3) for key, value in immutable["phases"].items()})
         bridge = publication_adapter(immutable, usable, config.publishing.channel)
         body, stories = bridge["body"], bridge["stories"]
@@ -968,7 +980,7 @@ def run_daily(root: Path, *, confirm=False, cached=False, shadow_date=None, shad
                       exclusion_reasons=reasons, telegram_utf16_length=telegram_length(body),
                       essential_facts_checked=immutable["essential_facts_checked"],
                       essential_facts_lost=immutable["essential_facts_lost"], distorted_events=immutable["distorted_events"],
-                      warnings=warnings, destination=config.publishing.channel)
+                      warnings=warnings, destination=config.publishing.channel,attribution=immutable['attribution'])
         result = dict(mode=suffix.upper(), pipeline=DAILY_PIPELINE_REVISION, day=day.isoformat(),
                       window_start=start.isoformat(), window_end=end.isoformat(), raw_count=len(items),
                       selected_count=len(stories), telegram_utf16_length=telegram_length(body),
@@ -976,7 +988,7 @@ def run_daily(root: Path, *, confirm=False, cached=False, shadow_date=None, shad
                       selected_sources=[asdict(story) for story in stories],
                       full_selected_sources=[asdict(story) for story in stories],
                       bundles=[asdict(bundle) for bundle in immutable["selected"]],
-                      generation_trace=[], llm_calls=0, phases_seconds=health["phases_seconds"],
+                      generation_trace=[], llm_calls=0, phases_seconds=health["phases_seconds"],attribution=immutable['attribution'],
                       **{key: immutable[key] for key in ("essential_facts_checked", "essential_facts_lost",
                                                        "distorted_events", "provenance_issues")})
         _atomic_diagnostic(output / "sources.json", [asdict(item) for item in usable])

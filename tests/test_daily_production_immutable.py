@@ -88,6 +88,37 @@ class ImmutableProductionTests(unittest.TestCase):
         self.assertEqual(self.run_batch(confirm=True), 0)
         self.assertEqual(self.api.send_text.call_count, 1)
 
+    def provider_item(self):
+        from tests.test_football_data import raw
+        from premwire.football_data import source_item
+        row=raw()
+        row.update(utcDate=(NOW-timedelta(hours=4)).isoformat(),lastUpdated=(NOW-timedelta(minutes=8)).isoformat())
+        row['score']['fullTime']=dict(home=5,away=0);row['score']['winner']='HOME_TEAM'
+        return source_item(row,(NOW-timedelta(minutes=5)).isoformat())
+
+    def test_attribution_read_failure_retains_inline_credit(self):
+        from premwire.daily_footer import CREDIT
+        self.items=[self.provider_item()]
+        self.api.call.side_effect=TelegramApiError('Synthetic read unavailable')
+        self.assertEqual(self.run_batch(confirm=True),0)
+        self.assertEqual(self.receipt()[1].count(CREDIT),1)
+        self.assertEqual(self.health()['attribution']['placement'],'INLINE')
+        self.assertEqual(self.health()['attribution_check_failure'],'TelegramApiError')
+        self.assertEqual(self.api.send_text.call_count,1)
+
+    def test_verified_about_credit_removes_only_inline_footer(self):
+        from premwire.daily_footer import CREDIT
+        self.items=[self.provider_item()]
+        self.api.call.return_value=dict(type='channel',username='shadow',description='Original\n\n'+CREDIT)
+        self.assertEqual(self.run_batch(confirm=True),0)
+        body=self.receipt()[1]
+        self.assertNotIn(CREDIT,body);self.assertTrue(body.endswith('\n\n@PremWire'))
+        self.assertIn('5:0',body)
+        self.assertEqual(self.health()['attribution']['placement'],'CHANNEL_DESCRIPTION')
+        self.assertEqual(self.health()['essential_facts_lost'],0)
+        self.assertEqual(self.run_batch(confirm=True),0)
+        self.assertEqual(self.api.send_text.call_count,1)
+
     def test_dry_run_same_route_never_sends_or_creates_production_ledger(self):
         self.assertEqual(self.run_batch(), 0)
         self.api.send_text.assert_not_called()
