@@ -31,7 +31,7 @@ def family(bundle):
     kind = bundle.event_type
     if kind.startswith('TRANSFER_'): return 'TRANSFER'
     if kind.startswith('CONTRACT_'): return 'CONTRACT'
-    if kind in ('MATCH_RESULT', 'MATCH_HALFTIME'): return 'FIXTURE'
+    if kind in ('MATCH_RESULT', 'MATCH_HALFTIME','MATCH_SCHEDULED','MATCH_LIVE'): return 'FIXTURE'
     if kind == 'INJURY': return 'INJURY'
     if kind.startswith('APPOINTMENT'): return 'APPOINTMENT'
     return kind
@@ -84,7 +84,8 @@ def stage(bundle):
         return 4 if any('SURGERY_PERFORMED' in f.values or 'CONFIRMED' in f.values for f in bundle.verified_facts) else 2
     if kind in ('TRANSFER_AGREEMENT', 'CONTRACT_AGREEMENT'): return 3
     if kind in ('TRANSFER_TALKS', 'TRANSFER_CONTACT'): return 2
-    if kind == 'MATCH_HALFTIME': return 1
+    if kind in ('MATCH_HALFTIME','MATCH_LIVE'): return 1
+    if kind=='MATCH_SCHEDULED':return 0
     return 1
 
 
@@ -118,7 +119,7 @@ def freshness_gate(bundles, inputs, cutoff, history=()):
         event_day = date.fromisoformat(b.event_date) if b.event_date else None
         age = (day - (event_day or source_day)).days
         source_age = (day - source_day).days
-        status = 'FULL_TIME' if b.event_type == 'MATCH_RESULT' else 'HALF_TIME' if b.event_type == 'MATCH_HALFTIME' else ''
+        status = 'FULL_TIME' if b.event_type == 'MATCH_RESULT' else 'HALF_TIME' if b.event_type == 'MATCH_HALFTIME' else b.match_status
         b = replace(b, source_published_at=utc(max(times)), source_id=','.join(sorted({s.source_id for s in sources})),
                     source_collected_at=max((utc(getattr(s, 'source_collected_at', '')) for s in sources), default=''),
                     first_seen_at=min((utc(getattr(s, 'first_seen_at', '')) for s in sources if getattr(s, 'first_seen_at', '')), default=''),
@@ -160,6 +161,10 @@ def freshness_gate(bundles, inputs, cutoff, history=()):
             category = 'STALE'; reason = reason or 'FRESHNESS_EVENT_TYPE_AGE_POLICY'
         if b.event_type == 'MATCH_HALFTIME' and instant(cutoff) - reported > timedelta(hours=2):
             category = 'STALE'; reason = reason or 'IN_PLAY_SNAPSHOT_EXPIRED'
+        if b.event_type in ('MATCH_SCHEDULED','MATCH_LIVE','LINEUP') and age!=0:
+            category='STALE';reason=reason or 'PREMATCH_NOT_CURRENT_DAY'
+        if b.event_type=='MATCH_LIVE' and instant(cutoff)-reported>timedelta(minutes=15):
+            category='STALE';reason=reason or 'IN_PLAY_SNAPSHOT_EXPIRED'
         # Important old but unprinted news may survive, never masquerade as today.
         if category == 'RECENT_UNPUBLISHED' and b.importance < 60:
             reason = reason or 'RECENT_UNPUBLISHED_LOW_EDITORIAL_VALUE'

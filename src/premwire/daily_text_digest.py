@@ -723,7 +723,7 @@ class BatchOllama:
                 self.process.wait(timeout=10)
 
 
-DAILY_PIPELINE_REVISION = "editorial-production-20261020-v2-footer"
+DAILY_PIPELINE_REVISION = "editorial-production-20261020-v3-matchday"
 
 
 def empty_edition_reason(items, warnings, audit):
@@ -955,6 +955,7 @@ def run_daily(root: Path, *, confirm=False, cached=False, shadow_date=None, shad
         bridge = publication_adapter(immutable, usable, config.publishing.channel)
         body, stories = bridge["body"], bridge["stories"]
         audit = immutable["audit"]
+        health['editorial_quality']=audit.get('edition_quality',{})
         match_coverage = audit.get('match_coverage', {})
         health['match_coverage'] = match_coverage
         if body and match_coverage.get('status') != 'COVERAGE_OK':
@@ -1037,6 +1038,9 @@ def run_daily(root: Path, *, confirm=False, cached=False, shadow_date=None, shad
     except Exception as error:
         health.update(status="SKIPPED_UNSAFE" if isinstance(error, ValueError) else "FAILED",
                       reason=type(error).__name__, failure_stage=phase)  # Never arbitrary exception strings.
+        from .match_day_editorial import EditionQualityError
+        if isinstance(error,EditionQualityError):
+            health.update(reason='EDITORIAL_EDITION_QUALITY_BLOCKED',editorial_quality=error.diagnostics)
         frames = []
         traceback = error.__traceback__
         while traceback is not None:

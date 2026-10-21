@@ -48,7 +48,9 @@ class ProviderTests(unittest.TestCase):
         item=source_item(r,OBS);b,dec=compile_sources([item],END)
         self.assertFalse(b);self.assertEqual(dec[0]['decision'],'REJECT')
     def test_halftime_never_final(self):
-        self.assertFalse(compile_sources([source_item(raw(status='PAUSED'),OBS)],END)[0])
+        bundles=compile_sources([source_item(raw(status='PAUSED'),OBS)],END)[0]
+        self.assertTrue(all(b.event_type!='MATCH_RESULT' for b in bundles))
+        if bundles:self.assertIn('не окончательный',bundles[0].render())
     def test_future_kickoff_rejected(self):
         with self.assertRaises(ValueError):normalize(raw(utcDate=END.isoformat()),OBS,END)
     def test_awarded_not_played_final(self):

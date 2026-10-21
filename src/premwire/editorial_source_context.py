@@ -82,7 +82,7 @@ def enrich(bundles,inputs,audit):
         candidates=[]
         for pos,b in enumerate(output):
             raw=fixture(b)
-            if raw is None:continue
+            if raw is None or raw['status']!='FINISHED':continue
             # An old caption or live update cannot enrich a different day's game.
             if item.published_at.astimezone(MOSCOW).date().isoformat()!=b.event_date:continue
             if item.published_at<datetime.fromisoformat(raw['utcDate'].replace('Z','+00:00')):continue

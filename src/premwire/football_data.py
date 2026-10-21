@@ -222,7 +222,10 @@ def compile_sources(items, cutoff):
             if item.source_id != SOURCE_ID or item.external_id != str(row['fixture_id']) or item.canonical_url != row['source'] or instant(item.source_collected_at) < instant(row['available_at']):
                 raise ValueError('SOURCE_IDENTITY_MISMATCH')
             if row['status'] != 'FULL_TIME':
-                raise ValueError('MATCH_NOT_FINAL')
+                from .match_day_editorial import nonfinal
+                bundles.append(nonfinal(item,cutoff))
+                decisions.append(dict(url=item.canonical_url,decision='KEEP',reason='TYPED_PROVIDER_NONFINAL_STAGE'))
+                continue
             home, away = display(row['home']), display(row['away'])
             hs, aws = row['score']
             if hs == aws:
@@ -366,7 +369,7 @@ def collect(client, start, now):
             try:
                 row = normalize(raw, record['retrieved_at'], cutoff)
                 fixtures.append(row)
-                if first.isoformat() <= row['event_date'] <= now.astimezone(MOSCOW).date().isoformat() and row['status'] == 'FULL_TIME':
+                if first.isoformat() <= row['event_date'] <= now.astimezone(MOSCOW).date().isoformat() and row['status'] in ('FULL_TIME','SCHEDULED','LIVE','HALF_TIME'):
                     items.append(source_item(raw, record['retrieved_at']))
             except (ValueError, KeyError, TypeError):
                 errors.append(dict(competition=raw.get('competition',{}).get('code') if isinstance(raw,dict) and isinstance(raw.get('competition'),dict) else None, reason='ROW_REJECTED'))

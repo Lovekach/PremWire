@@ -5,7 +5,7 @@ every optional model choice independently reproducible, not free factual prose.
 Scores are editorial judgements, NOT inferred standings or surprise statistics.
 """
 from dataclasses import asdict, replace
-from datetime import date
+from datetime import date,datetime
 import hashlib
 import json
 import re
@@ -14,6 +14,9 @@ REVISION='editorial-v2-20261018-v1'
 # football-data.org ID + exact full provider name, observed in retained API
 # evidence. Russian labels are reviewed editorial translations, not identities.
 TEAMS={
+ 613:('Fenerbahçe SK','Фенербахче'),930:('SK Slavia Praha','Славия Прага'),
+ 10233:('Sabah FK','Сабах'),1899:('PAE AEK','АЕК'),5721:('FK Bodø/Glimt','Будё-Глимт'),
+ 7509:('ŠK Slovan Bratislava','Слован Братислава'),503:('FC Porto','Порту'),674:('PSV','ПСВ'),
  2:('TSG 1899 Hoffenheim','Хоффенхайм'),3:('Bayer 04 Leverkusen','Байер'),
  4:('Borussia Dortmund','Боруссия Дортмунд'),5:('FC Bayern München','Бавария'),
  6:('FC Schalke 04','Шальке'),7:('Hamburger SV','Гамбург'),10:('VfB Stuttgart','Штутгарт'),
@@ -105,8 +108,13 @@ def fixture(bundle):
     # that caption clock for the API observation or infer a completion instant.
     if (str(raw['id'])!=identity.values[1] or
         tuple(map(str,(raw['homeTeam']['id'],raw['awayTeam']['id'])))!=identity.values[2:4] or
-        raw['status']!='FINISHED' or raw['score']['duration']!='REGULAR'):
+        raw['score']['duration']!='REGULAR'):
         raise ValueError('EDITORIAL_FIXTURE_IDENTITY_MISMATCH')
+    if bundle.event_type in ('MATCH_SCHEDULED','MATCH_LIVE'):
+        from .match_day_editorial import validate
+        if validate(bundle,bundle.verified_facts[0].formulations[0]):raise ValueError('NONFINAL_SOURCE_MISMATCH')
+        return raw
+    if raw['status']!='FINISHED':raise ValueError('EDITORIAL_FINAL_STATUS_MISMATCH')
     a,b=raw['score']['fullTime']['home'],raw['score']['fullTime']['away']
     if any(type(v) is not int or not 0<=v<=99 for v in (a,b)):
         raise ValueError('EDITORIAL_INVALID_FINAL_SCORE')
@@ -124,6 +132,7 @@ def category(bundle):
     if 'TRANSFER' in kind:return 'TRANSFERS'
     if 'CONTRACT' in kind:return 'CONTRACTS'
     if 'STATS' in kind or 'RECORD' in kind or kind=='FINANCIAL_REPORT':return 'STATISTICS'
+    if kind in ('MATCH_SCHEDULED','MATCH_LIVE','LINEUP'):return 'IMPORTANT_MATCHES'
     return CATEGORIES.get(kind,'CLUB_AND_COACH_NEWS')
 
 def score(bundle,day):
@@ -137,6 +146,12 @@ def score(bundle,day):
       novelty=8 if bundle.freshness_category=='UPDATED_STORY' else 0)
     if raw:
         comp=raw['competition']['code'];a=raw['score']['fullTime']['home'];b=raw['score']['fullTime']['away']
+        if bundle.event_type in ('MATCH_SCHEDULED','MATCH_LIVE'):
+            audience=max(AUDIENCE.get(raw['homeTeam']['id'],0),AUDIENCE.get(raw['awayTeam']['id'],0))
+            # Competition plus observed club-interest prior, not all calendar rows.
+            components.update(base=25,competition=20 if comp=='CL' else 8,audience=audience,confirmed_context=0)
+            if comp!='CL' or audience<12:components['base']=-50
+            return sum(components.values()),components
         components.update(competition=12 if comp in ('PL','CL') else 8,
           audience=max(AUDIENCE.get(raw['homeTeam']['id'],0),AUDIENCE.get(raw['awayTeam']['id'],0)),
           scale=(30 if abs(a-b)>=5 else 20 if abs(a-b)>=3 else 0)+(12 if a+b>=7 else 6 if a+b>=5 else 0))
@@ -152,10 +167,13 @@ def score(bundle,day):
         if 'scorers' in detail_keys or any('first_' in k for k in detail_keys):components['confirmed_context']+=12
     else:
         components['base']=35 if bundle.event_type=='APPOINTMENT' else 30
+        if bundle.event_type in ('INJURY','DISCIPLINE') and any('SOURCE_OFFICIAL' in f.values for f in bundle.verified_facts):components['base']=50
+        if bundle.event_type=='APPOINTMENT_TALKS':components['base']=45
         exact={v[1]:AUDIENCE.get(k,0) for k,v in TEAMS.items()}
         components['audience']=max((exact.get(p,0) for p in bundle.participants),default=0)
         if bundle.event_type=='DISCIPLINE':components['consequences']=15
         if bundle.event_type=='TRANSFER_INTEREST':components['base']=12
+        if bundle.event_type=='LINEUP' and components['audience']<12:components['base']=-50
         if bundle.freshness_category not in ('FRESH_TODAY','UPDATED_TODAY'):
             components['previous_day']-=10
     return sum(components.values()),components
@@ -173,8 +191,11 @@ def select(bundles,day):
             decisions.append(dict(event_id=b.event_id,sources=b.source_refs,decision='EXCLUDE',reason='CONSOLIDATED_EXACT_EVENT'));continue
         seen.add(identity)
         value,components=score(b,day);raw=fixture(b)
-        previous=bool(b.event_date and b.event_date<day.isoformat())
+        from .daily_text_digest import MOSCOW
+        reported_day=datetime.fromisoformat(b.source_published_at).astimezone(MOSCOW).date().isoformat() if b.source_published_at else ''
+        previous=bool((b.event_date or reported_day) and (b.event_date or reported_day)<day.isoformat())
         threshold=(60 if raw else 50) if previous and b.event_type=='MATCH_RESULT' else 55 if raw else 40
+        if previous and b.event_type=='APPOINTMENT':threshold=55
         # A single bare transfer-interest claim is not a substantive story.
         if b.event_type=='TRANSFER_INTEREST':threshold=40
         meaningful=[f for f in b.verified_facts if f.key not in ('report_date','fixture_identity')]
@@ -205,6 +226,7 @@ def parts(bundle,variant):
     from .daily_fact_digest import draft_parts,MONTHS
     original=draft_parts(replace(bundle,editorial_mode=''),variant)
     raw=fixture(bundle)
+    if bundle.event_type in ('MATCH_SCHEDULED','MATCH_LIVE'):return original
     if raw is None:
         # Generic verified relations retain their audited grammar. Remove only
         # redundant 'Клуб' label before a quoted identity, no factual rewrite.
@@ -247,6 +269,11 @@ def validate(bundle,text,variant=0):
     Names/numbers alone cannot authorize a new causal claim or status upgrade.
     """
     problems=[];raw=fixture(bundle)
+    from .match_day_editorial import validate as match_day_validate
+    problems.extend(match_day_validate(bundle,text))
+    if bundle.event_type in ('MATCH_SCHEDULED','MATCH_LIVE'):
+        expected=' '.join(v for v in parts(bundle,variant).values() if v)
+        return problems+([] if text==expected else ['UNAPPROVED_NONFINAL_ASSERTION'])
     from .editorial_source_context import validate_fact
     if any(not validate_fact(f) for f in bundle.verified_facts):problems.append('SOURCE_CONTEXT_SLOT_MISMATCH')
     if raw:

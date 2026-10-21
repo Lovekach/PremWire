@@ -132,6 +132,8 @@ def prepare_immutable_edition(inputs,start,end,filters,*,history=(),style_chat=N
     audit['provider_sources']=typed_checks
     from .editorial_source_context import enrich
     bundles=enrich(bundles,inputs,audit)
+    from .match_day_editorial import recover
+    bundles=recover(bundles,inputs,audit)
     originals={i.canonical_url:i for i in inputs}
     anchored=[]
     for b in bundles:
@@ -211,6 +213,11 @@ def prepare_immutable_edition(inputs,start,end,filters,*,history=(),style_chat=N
     phases['optional_style']=time.monotonic()-timer
     timer=time.monotonic();body,final=render(selected,day,choices,channel_credit_verified=channel_credit_verified)
     checked=audit_digest(body,final,choices,inputs);quality=quality_issues(body,final)
+    from .match_day_editorial import edition_gate
+    audit['edition_quality']=edition_gate(final,inputs,audit,end)
+    if audit['edition_quality']['status']=='BLOCKED':
+        from .match_day_editorial import EditionQualityError
+        raise EditionQualityError(audit['edition_quality'])
     if checked['essential_facts_lost'] or checked['distorted_events'] or checked['provenance_issues'] or quality:
         raise ValueError('Immutable final validation failed')
     if frozen!=json.dumps([asdict(b) for b in selected],ensure_ascii=False,sort_keys=True):

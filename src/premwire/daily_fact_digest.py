@@ -920,6 +920,8 @@ def audit_digest(body, selected, choices, sources=()):
             from .editorial_v2 import parts,validate
             presentation=parts(b,variant)
             if validate(b,b.render(variant),variant):distorted.append(b.event_id)
+            from .match_day_editorial import validate_source_clocks
+            if sources and not validate_source_clocks(b,sources):distorted.append(b.event_id)
         facts={f.key:f for f in b.verified_facts}
         for key in b.essential_facts:
             fact=facts.get(key)
